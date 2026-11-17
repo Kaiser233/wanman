@@ -1,5 +1,6 @@
 import type { ChildProcess } from 'child_process';
 import type { AgentDefinition, AgentRuntime, ModelTier } from '@wanman/core';
+import { AgyAdapter } from './agy-adapter.js';
 import { ClaudeAdapter } from './claude-adapter.js';
 import { CodexAdapter } from './codex-adapter.js';
 
@@ -29,10 +30,12 @@ export interface AgentRunHandle {
   resumeMissed?(): boolean;
 }
 
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 export interface AgentRunOptions {
   runtime: AgentRuntime;
   model: ModelTier;
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  reasoningEffort?: ReasoningEffort;
   /**
    * Codex-only: enable fast mode (`/fast on`).
    * Adds `-c service_tier="fast"` and `-c features.fast_mode=true`,
@@ -45,10 +48,10 @@ export interface AgentRunOptions {
   initialMessage?: string;
   sessionId?: string;
   /**
-   * Resume a previously-captured session. The Claude adapter passes this as
-   * `--resume <id>`. Other adapters may ignore it. When the session cannot
-   * be found locally, `AgentRunHandle.resumeMissed()` returns true so the
-   * caller can retry without resume.
+   * Resume a previously-captured session. Claude passes `--resume <id>`,
+   * Agy passes `--conversation <id>`. Other adapters may ignore it. When the
+   * session cannot be found locally, `AgentRunHandle.resumeMissed()` returns
+   * true so the caller can retry without resume.
    */
   resumeSessionId?: string;
   env?: Record<string, string>;
@@ -61,7 +64,10 @@ export interface AgentAdapter {
 }
 
 export function normalizeAgentRuntime(value?: string | null): AgentRuntime {
-  return value === 'codex' ? 'codex' : 'claude';
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === 'codex') return 'codex';
+  if (normalized === 'agy' || normalized === 'atg' || normalized === 'antigravity') return 'agy';
+  return 'claude';
 }
 
 /**
@@ -90,26 +96,35 @@ const CLAUDE_MODEL_TIER: Record<string, ModelQuality> = {
 const FALLBACK_RUNTIME_MODEL_DEFAULTS: Record<AgentRuntime, Record<ModelQuality, string>> = {
   claude: { high: 'opus', standard: 'sonnet' },
   codex: { high: 'gpt-5.4', standard: 'gpt-5.4' },
+  agy: { high: 'gemini-4-hydrogen-high', standard: 'gemini-4-carbon-medium' },
 };
 
+function envNonEmpty(key: string): string | undefined {
+  const value = process.env[key]?.trim();
+  return value ? value : undefined;
+}
+
 function providerModelOverride(runtime: AgentRuntime): string | undefined {
-  return runtime === 'codex'
-    ? process.env['WANMAN_CODEX_MODEL']
-    : process.env['WANMAN_CLAUDE_MODEL'];
+  if (runtime === 'codex') return envNonEmpty('WANMAN_CODEX_MODEL');
+  if (runtime === 'agy') return envNonEmpty('WANMAN_AGY_MODEL');
+  return envNonEmpty('WANMAN_CLAUDE_MODEL');
 }
 
 function runtimeDefaultModel(runtime: AgentRuntime, tier: ModelQuality): string {
   const runtimeKey = runtime.toUpperCase();
   const tierKey = tier.toUpperCase();
-  return process.env[`WANMAN_${runtimeKey}_${tierKey}_MODEL`]
-    ?? process.env[`WANMAN_${tierKey}_MODEL`]
+  return envNonEmpty(`WANMAN_${runtimeKey}_${tierKey}_MODEL`)
+    ?? envNonEmpty(`WANMAN_${tierKey}_MODEL`)
     ?? providerModelOverride(runtime)
-    ?? process.env['WANMAN_MODEL']
+    ?? envNonEmpty('WANMAN_MODEL')
     ?? FALLBACK_RUNTIME_MODEL_DEFAULTS[runtime][tier];
 }
 
 export function resolveModel(model: string, runtime: AgentRuntime): string {
   const normalized = model.trim().toLowerCase();
+  if (normalized === 'default' && runtime === 'agy') {
+    return providerModelOverride(runtime) ?? envNonEmpty('WANMAN_MODEL') ?? 'default';
+  }
   const tier = ABSTRACT_MODEL_TIER[normalized]
     ?? (runtime === 'claude' ? undefined : CLAUDE_MODEL_TIER[normalized]);
   if (!tier) return model;
@@ -123,6 +138,9 @@ export function resolveAgentRuntime(definition: AgentDefinition): AgentRuntime {
 export function createAgentAdapter(runtime: AgentRuntime): AgentAdapter {
   if (runtime === 'codex') {
     return new CodexAdapter();
+  }
+  if (runtime === 'agy') {
+    return new AgyAdapter();
   }
   return new ClaudeAdapter();
 }

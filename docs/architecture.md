@@ -18,13 +18,13 @@ This document is the tour a developer new to the wanman codebase should read fir
                                 |                                |
                                 |  +--------------------------+  |
                                 |  |  AgentProcess[]          |  |
-                                |  |  (spawns Claude/Codex    |  |
-                                |  |   CLI children)          |  |
+                                |  |  (spawns Claude/Codex/   |  |
+                                |  |   Agy CLI children)      |  |
                                 |  +--------------------------+  |
                                 +----------------+---------------+
                                                  |
                                                  v
-                                    Claude Code / Codex subprocess
+                                    Claude / Codex / Agy subprocess
                                     (per-agent worktree + $HOME)
 ```
 
@@ -40,7 +40,7 @@ Every agent has a `lifecycle` declared in the agents config:
 start()
   +-> runLoop()
         +- relay.recv()            -- pull pending messages
-        +- spawnClaudeOrCodex()    -- boot the CLI subprocess with those as prompt
+        +- spawnAgent()            -- boot the CLI subprocess with those as prompt
         +- wait()                  -- block until the subprocess exits
         +- sleep(RESPAWN_DELAY_MS) -- cooldown
         +- repeat
@@ -57,7 +57,7 @@ start()
   +-> state = 'idle'   (no CLI subprocess running)
         +- trigger() or handleSteer()
              +- relay.recv()
-             +- spawnClaudeOrCodex()
+             +- spawnAgent()
              +- wait()
         +- state = 'idle' again
 ```
@@ -66,7 +66,7 @@ start()
 - A steer-priority message or a cron tick triggers a single execution, after which the agent falls back to `idle`.
 - Each spawn is stateless: the next trigger gets a fresh CLI session.
 
-### 2.3 `idle_cached` — idle, but with resumed context (Claude-only)
+### 2.3 `idle_cached` — idle, but with resumed context (Claude and Agy)
 
 ```
 start()
@@ -75,27 +75,27 @@ start()
 
 trigger() / handleSteer()
   +- relay.recv()
-  +- spawnClaudeCode({ resumeSessionId: lastSessionId })   # claude --resume <id>
-  +- onSessionId(id => lastSessionId = id)                 # captured from system/init
+  +- spawnAgent({ resumeSessionId: lastSessionId })        # claude --resume <id> / agy --conversation <id>
+  +- onSessionId(id => lastSessionId = id)                 # captured from init event
   +- wait()
-  +- if resumeMissed():                                    # stale session
+  +- if resumeMissed():                                    # stale session (Claude)
        lastSessionId = null
        respawn without --resume                            # cold-start fallback
   +- state = 'idle' again      (but lastSessionId is preserved)
 ```
 
-- Same idle CPU profile as `on-demand`, but conversation context survives idle periods because the next spawn passes the captured Claude `session_id` as `--resume <id>`.
+- Same idle CPU profile as `on-demand`, but conversation context survives idle periods because the next spawn passes the captured `session_id` via `claude --resume <id>` or `agy --conversation <id>`.
 - The first trigger always cold-starts (no captured session yet).
-- If the local Claude CLI has dropped the session id (rotated, manually deleted, etc.), the runtime detects the failure via stderr + exit code, clears the cached id, and re-spawns once without `--resume`. No agent gets stranded.
+- For Claude Code, if the local CLI has dropped the session id (rotated, manually deleted, etc.), the runtime detects the failure via stderr + exit code, clears the cached id, and re-spawns once without `--resume`. No agent gets stranded.
 - Useful for stateful long-running roles where keeping a process alive forever would be wasteful but losing context every trigger is also wrong (e.g. a "support" agent that should remember the customer between messages).
-- **Claude-only.** The resume mechanism depends on `claude --resume` and Claude Code's `system/init` session id; Codex has no equivalent in this runtime today. Pairing `idle_cached` with `runtime: codex` (or letting `WANMAN_RUNTIME=codex` flip the effective runtime) is rejected at supervisor startup so the misconfig surfaces loudly instead of silently degrading to `on-demand` semantics.
+- **Claude and Agy only.** Codex has no equivalent resume mechanism in this runtime today. Pairing `idle_cached` with `runtime: codex` (or letting `WANMAN_RUNTIME=codex` flip the effective runtime) is rejected at supervisor startup so the misconfig surfaces loudly instead of silently degrading to `on-demand` semantics.
 
 ### 2.4 Agent states
 
 | State | Meaning |
 |-------|---------|
 | `idle` | Waiting (on-demand normal state). |
-| `running` | A Claude Code or Codex subprocess is executing. |
+| `running` | A Claude Code, Codex, or Antigravity (`agy`) subprocess is executing. |
 | `stopped` | Manually stopped or shutting down. |
 | `error` | Recent crash; the supervisor will retry. |
 
@@ -121,7 +121,7 @@ sender                        Relay                         target agent
   |                             |                 (next loop)   |
   |                             |                               |-- relay.recv()
   |                             |                               |   (steer sorted first)
-  |                             |                               |-- spawnClaudeOrCodex(steerMsg)
+  |                             |                               |-- spawnAgent(steerMsg)
 ```
 
 The relay's steer callback tells the `AgentProcess` to SIGKILL its current Claude/Codex child. The run loop's normal respawn path then picks the steer message up first because of the SQL ordering.
@@ -184,12 +184,13 @@ These are the two seams where wanman plugs into "the rest of your infrastructure
 
 ## 7. Runtime adapters
 
-Each agent child is a Claude Code or Codex subprocess. The supervisor selects between them via `WANMAN_RUNTIME` (default `claude`) and a per-agent override if present.
+Each agent child is a Claude Code, Codex, or Antigravity (`agy`) subprocess. The supervisor selects between them via `WANMAN_RUNTIME` (`claude` default, `codex`, or `agy` with aliases `atg` / `antigravity`) and a per-agent override if present.
 
 - `claude-adapter.ts` / `claude-code.ts` — spawns `claude` with the agent's system prompt, injects skill files, streams structured events back to the supervisor.
 - `codex-adapter.ts` — same shape, targeting `@openai/codex`. `WANMAN_CODEX_MODEL` and `WANMAN_CODEX_REASONING_EFFORT` control model selection.
+- `agy-adapter.ts` — targets Antigravity CLI (`agy --input-format stream-json --output-format stream-json --dangerously-skip-permissions`), resolving the binary via `WANMAN_AGY_BIN`, `PATH`, or `~/.local/bin/agy`. Controlled by `WANMAN_AGY_MODEL`, `WANMAN_AGY_HIGH_MODEL`, `WANMAN_AGY_STANDARD_MODEL`, and `WANMAN_AGY_EFFORT` (`low|medium|high|xhigh|max`), with `AGY_CLI_DISABLE_AUTO_UPDATE=true` and `AGY_CLI_HIDE_LOGO=true` set automatically.
 
-Both adapters emit the same `AgentRunEvent` stream, so the supervisor and CLI don't care which is running. Adding a new adapter is a matter of implementing that event contract and registering it in `agent-process.ts`.
+All adapters emit the same `AgentRunEvent` stream, so the supervisor and CLI don't care which is running. Adding a new adapter is a matter of implementing that event contract and registering it in `agent-adapter.ts` / `agent-process.ts`.
 
 ## 8. Worktree and home isolation
 
@@ -197,13 +198,13 @@ Before spawning the first child, the supervisor sets up, per agent:
 
 - A **worktree** materialized from the current `HEAD` under `.wanman/worktree/`. Agents edit this, not your real checkout.
 - A **per-agent `$HOME`** under `.wanman/home/<agent>/` with generated `wanman` and `pnpm` wrappers. Shell profile writes, `.npmrc` edits, etc. stay contained.
-- A **per-agent `.claude/`** (or `.codex/`) under that home, so the two agents don't step on each other's CLI state.
+- **Runtime-specific auth & state directories** under that home: `.claude/` and `.codex/` are isolated per agent, while `.gemini/` is selectively bridged (symlinking `GEMINI.md`, `antigravity-cli/settings.json`, `antigravity-cli/keybindings.json`, and `config/{config.json,mcp_config.json,hooks.json,plugins,agents}` when present; symlinking `Library/Keychains` on macOS) so host auth/config are available while `antigravity-cli` session directories (`conversations/`, `brain/`, `cache/`) and `config/skills/` stay isolated per agent.
 
 The `wanman` wrapper inside each agent's `$PATH` points at the same CLI binary but presets `WANMAN_AGENT_NAME` so `wanman recv` without args "just works" from the agent's perspective.
 
 ## 9. Shared skills
 
-`packages/core/skills/*/SKILL.md` ship alongside the runtime bundle. At supervisor startup, `setupSharedSkills()` (in `shared-skill-manager.ts`) materializes them into each agent's `~/.claude/skills/` so Claude Code auto-discovers them.
+`packages/core/skills/*/SKILL.md` ship alongside the runtime bundle. At supervisor startup, shared skills are installed/linked into each agent's `~/.claude/skills/`, `~/.codex/skills/`, and `~/.gemini/config/skills/` so Claude Code, Codex, and Antigravity (`agy`) auto-discover them.
 
 Skill snapshots — immutable copies tied to a specific run — are written to the directory resolved by `WANMAN_SKILL_SNAPSHOTS_DIR`, or a sibling of the shared-skills dir, or `$TMPDIR/wanman-skill-snapshots` as a last resort. This is the mechanism that lets you audit exactly which skill version an agent had available for a given task.
 
@@ -251,7 +252,7 @@ packages/
                core/skills/ ships the SKILL.md bundle.
   host-sdk/    Programmatic embedding SDK for host-side integrations.
   runtime/     The supervisor. Agent process manager, SQLite stores,
-               Claude/Codex adapters, cron scheduler, event router.
+               Claude/Codex/Agy adapters, cron scheduler, event router.
 ```
 
 For the CLI surface and env vars, see the [README](../README.md#cli-commands).

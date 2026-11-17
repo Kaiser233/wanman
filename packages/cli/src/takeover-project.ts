@@ -303,7 +303,7 @@ function scoreDocument(relativePath: string): { score: number; kind: ProjectDocu
   const normalized = relativePath.replace(/\\/g, '/').toLowerCase()
   if (/^readme(\.|$)/.test(normalized)) return { score: 100, kind: 'readme' }
   if (/(^|\/)(roadmap|todo|backlog|milestone|plan|vision|prd|strategy)/.test(normalized)) return { score: 95, kind: 'roadmap' }
-  if (/^claude\.md$/.test(normalized)) return { score: 85, kind: 'notes' }
+  if (/^(claude|gemini|agents)\.md$/.test(normalized)) return { score: 85, kind: 'notes' }
   if (/^package\.json$|^pyproject\.toml$|^cargo\.toml$|^go\.mod$/.test(normalized)) return { score: 70, kind: 'manifest' }
   if (/^docs\/.+\.(md|mdx|rst|txt)$/.test(normalized)) return { score: 60, kind: 'docs' }
   if (/\.(md|mdx|rst|txt)$/.test(normalized)) return { score: 40, kind: 'notes' }
@@ -334,6 +334,8 @@ export function collectProjectDocs(projectPath: string): ProjectDocument[] {
     'README.rst',
     'README',
     'CLAUDE.md',
+    'GEMINI.md',
+    'AGENTS.md',
     'ROADMAP.md',
     'ROADMAP',
     'TODO.md',

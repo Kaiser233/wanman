@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 import type { AgentDefinition, AgentMatrixConfig } from '@wanman/core';
+import { normalizeAgentRuntime } from './agent-adapter.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('config');
@@ -47,7 +48,7 @@ export function loadConfig(): AgentMatrixConfig {
     log.info('model override', { model });
   }
   if (process.env['WANMAN_RUNTIME']) {
-    const runtime = process.env['WANMAN_RUNTIME'] === 'codex' ? 'codex' : 'claude';
+    const runtime = normalizeAgentRuntime(process.env['WANMAN_RUNTIME']);
     for (const agent of config.agents) {
       agent.runtime = runtime;
     }
@@ -57,12 +58,21 @@ export function loadConfig(): AgentMatrixConfig {
     const codexModel = process.env['WANMAN_CODEX_MODEL'];
     let updated = 0;
     for (const agent of config.agents) {
-      const effectiveRuntime = agent.runtime === 'codex' ? 'codex' : 'claude';
-      if (effectiveRuntime !== 'codex') continue;
+      if (normalizeAgentRuntime(agent.runtime) !== 'codex') continue;
       agent.model = codexModel;
       updated += 1;
     }
     log.info('codex model override', { model: codexModel, agents: updated });
+  }
+  if (process.env['WANMAN_AGY_MODEL']) {
+    const agyModel = process.env['WANMAN_AGY_MODEL'];
+    let updated = 0;
+    for (const agent of config.agents) {
+      if (normalizeAgentRuntime(agent.runtime) !== 'agy') continue;
+      agent.model = agyModel;
+      updated += 1;
+    }
+    log.info('agy model override', { model: agyModel, agents: updated });
   }
 
   // Disable brain when WANMAN_NO_BRAIN=1 (web app uses D1 instead)

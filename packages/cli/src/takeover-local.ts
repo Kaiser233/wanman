@@ -508,6 +508,10 @@ export async function runLocal(
     const codexModel = opts.codexModel ?? process.env['WANMAN_CODEX_MODEL'] ?? process.env['WANMAN_MODEL'] ?? 'default'
     const codexEffort = opts.codexReasoningEffort ?? process.env['WANMAN_CODEX_REASONING_EFFORT'] ?? 'default'
     console.log(`  Codex:      ${codexModel} / ${codexEffort}`)
+  } else if (generated.runtime === 'agy') {
+    const agyModel = opts.agyModel ?? process.env['WANMAN_AGY_MODEL'] ?? process.env['WANMAN_MODEL'] ?? 'default'
+    const agyEffort = opts.agyEffort ?? process.env['WANMAN_AGY_EFFORT'] ?? 'default'
+    console.log(`  Agy:        ${agyModel} / ${agyEffort}`)
   }
   await runLocalSupervisorSession({
     supervisor: {
@@ -520,6 +524,8 @@ export async function runLocal(
       runtime: generated.runtime,
       codexModel: opts.codexModel,
       codexReasoningEffort: opts.codexReasoningEffort,
+      ...(opts.agyModel ? { agyModel: opts.agyModel } : {}),
+      ...(opts.agyEffort ? { agyEffort: opts.agyEffort } : {}),
     },
     keep: opts.keep,
     signalMode: 'forward_only',

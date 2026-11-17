@@ -183,4 +183,65 @@ describe('runLocal', () => {
     }))
     expect(fs.readFileSync(path.join(wanmanDir, 'live-dashboard.txt'), 'utf-8')).toContain('Implement')
   })
+
+  it('forwards agy runtime options to runLocalSupervisorSession', async () => {
+    const project = makeTmpDir()
+    const wanmanDir = path.join(project, '.wanman')
+    const worktree = path.join(wanmanDir, 'worktree')
+    fs.mkdirSync(worktree, { recursive: true })
+    fs.writeFileSync(path.join(wanmanDir, 'agents.json'), '{"agents":[]}')
+
+    runLocalSupervisorSessionMock.mockResolvedValueOnce(undefined)
+
+    const profile: ProjectProfile = {
+      path: project,
+      languages: ['typescript'],
+      packageManagers: ['pnpm'],
+      frameworks: [],
+      ci: [],
+      testFrameworks: ['vitest'],
+      hasReadme: true,
+      hasClaudeMd: false,
+      hasDocs: false,
+      issueTracker: 'none',
+      codeRoots: ['src'],
+      packageScripts: ['test'],
+    }
+    const generated: GeneratedAgentConfig = {
+      runtime: 'agy',
+      goal: 'Ship with agy',
+      agents: [],
+      intent: {
+        projectName: 'app',
+        summary: 'Ship with agy',
+        canonicalDocs: [],
+        roadmapDocs: [],
+        codeRoots: ['src'],
+        packageScripts: ['test'],
+        strategicThemes: [],
+        mission: 'Ship with agy',
+      },
+    }
+
+    await runLocal(profile, generated, wanmanDir, {
+      loops: 3,
+      pollInterval: 0,
+      output: path.join(project, 'out'),
+      keep: false,
+      noBrain: true,
+      infinite: false,
+      errorLimit: 3,
+      runtime: 'agy',
+      agyModel: 'gemini-3.8-flash-low',
+      agyEffort: 'max',
+    })
+
+    expect(runLocalSupervisorSessionMock).toHaveBeenCalledWith(expect.objectContaining({
+      supervisor: expect.objectContaining({
+        runtime: 'agy',
+        agyModel: 'gemini-3.8-flash-low',
+        agyEffort: 'max',
+      }),
+    }))
+  })
 })

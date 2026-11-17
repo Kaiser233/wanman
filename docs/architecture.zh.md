@@ -18,13 +18,13 @@
                                 |                                |
                                 |  +--------------------------+  |
                                 |  |  AgentProcess[]          |  |
-                                |  |  (spawns Claude/Codex    |  |
-                                |  |   CLI children)          |  |
+                                |  |  (spawns Claude/Codex/   |  |
+                                |  |   Agy CLI children)      |  |
                                 |  +--------------------------+  |
                                 +----------------+---------------+
                                                  |
                                                  v
-                                    Claude Code / Codex subprocess
+                                    Claude / Codex / Agy subprocess
                                     (per-agent worktree + $HOME)
 ```
 
@@ -40,7 +40,7 @@ CLI 只是一个薄薄的 JSON-RPC 2.0 客户端。真正有趣的东西 —— 
 start()
   +-> runLoop()
         +- relay.recv()            -- pull pending messages
-        +- spawnClaudeOrCodex()    -- boot the CLI subprocess with those as prompt
+        +- spawnAgent()            -- boot the CLI subprocess with those as prompt
         +- wait()                  -- block until the subprocess exits
         +- sleep(RESPAWN_DELAY_MS) -- cooldown
         +- repeat
@@ -57,7 +57,7 @@ start()
   +-> state = 'idle'   (no CLI subprocess running)
         +- trigger() or handleSteer()
              +- relay.recv()
-             +- spawnClaudeOrCodex()
+             +- spawnAgent()
              +- wait()
         +- state = 'idle' again
 ```
@@ -65,12 +65,16 @@ start()
 - 初始状态为 `idle`；在有东西戳它之前不消耗 CPU。
 - 一条 steer 优先级消息或一次 cron tick 触发一次执行，执行完毕后 agent 回到 `idle`。
 
-### 2.3 Agent 状态
+### 2.3 `idle_cached` —— 空闲但保留会话上下文（支持 Claude 与 Agy）
+
+- 与 `on-demand` 相同的空闲 CPU 特性，但下次触发会通过 `claude --resume <id>` 或 `agy --conversation <id>` 恢复上一次捕获的会话 ID（`runtime: codex` 不支持 `idle_cached`）。
+
+### 2.4 Agent 状态
 
 | 状态 | 含义 |
 |-------|---------|
 | `idle` | 等待中（on-demand 的常态）。 |
-| `running` | 有一个 Claude Code 或 Codex 子进程正在运行。 |
+| `running` | 有一个 Claude Code、Codex 或 Antigravity (`agy`) 子进程正在运行。 |
 | `stopped` | 被手动停止或正在关停。 |
 | `error` | 最近一次崩溃；supervisor 会重试。 |
 
@@ -96,7 +100,7 @@ sender                        Relay                         target agent
   |                             |                 (next loop)   |
   |                             |                               |-- relay.recv()
   |                             |                               |   (steer sorted first)
-  |                             |                               |-- spawnClaudeOrCodex(steerMsg)
+  |                             |                               |-- spawnAgent(steerMsg)
 ```
 
 relay 的 steer 回调通知 `AgentProcess` 对当前的 Claude/Codex 子进程发送 SIGKILL。随后 run loop 的常规重生路径会因 SQL 排序的缘故最先取到那条 steer 消息。
@@ -159,12 +163,13 @@ RPC 方法：`context.get`、`context.set`、`context.list`。`set` 是 upsert�
 
 ## 7. Runtime 适配器
 
-每个 agent 子进程都是 Claude Code 或 Codex 子进程。supervisor 通过 `WANMAN_RUNTIME`（默认 `claude`）进行选择，若 per-agent 有覆盖也会生效。
+每个 agent 子进程都是 Claude Code、Codex 或 Antigravity (`agy`) 子进程。supervisor 通过 `WANMAN_RUNTIME`（默认 `claude`，可选 `codex` 或 `agy`，别名 `atg`、`antigravity`）进行选择，若 per-agent 有覆盖也会生效。
 
 - `claude-adapter.ts` / `claude-code.ts` —— 用 agent 的 system prompt 派生 `claude`，注入 skill 文件，把结构化事件流回传给 supervisor。
 - `codex-adapter.ts` —— 形态相同，面向 `@openai/codex`。`WANMAN_CODEX_MODEL` 和 `WANMAN_CODEX_REASONING_EFFORT` 控制模型选择。
+- `agy-adapter.ts` —— 面向 Antigravity CLI（`agy --input-format stream-json --output-format stream-json --dangerously-skip-permissions`），按 `WANMAN_AGY_BIN`、`PATH`、`~/.local/bin/agy` 顺序查找二进制文件，受 `WANMAN_AGY_MODEL`、`WANMAN_AGY_HIGH_MODEL`、`WANMAN_AGY_STANDARD_MODEL` 和 `WANMAN_AGY_EFFORT` 控制，并自动设置 `AGY_CLI_DISABLE_AUTO_UPDATE=true` 和 `AGY_CLI_HIDE_LOGO=true`。
 
-两个适配器发出同一套 `AgentRunEvent` 流，所以 supervisor 和 CLI 不关心跑的是哪一个。新增一个适配器只需要实现那个事件契约，并在 `agent-process.ts` 中注册它。
+所有适配器发出同一套 `AgentRunEvent` 流，所以 supervisor 和 CLI 不关心跑的是哪一个。新增一个适配器只需要实现那个事件契约，并在 `agent-adapter.ts` / `agent-process.ts` 中注册它。
 
 ## 8. Worktree 与 home 隔离
 
@@ -172,13 +177,13 @@ RPC 方法：`context.get`、`context.set`、`context.list`。`set` 是 upsert�
 
 - 一个从当前 `HEAD` 物化到 `.wanman/worktree/` 下的 **worktree**。agent 编辑的是它，不是你真实的工作区。
 - 一个 **per-agent `$HOME`**，位于 `.wanman/home/<agent>/`，内含生成好的 `wanman` 和 `pnpm` 包装脚本。Shell 配置文件写入、`.npmrc` 编辑等都被圈在里面。
-- 该 home 下的 **per-agent `.claude/`**（或 `.codex/`），这样两个 agent 不会互相踩踏彼此的 CLI 状态。
+- 该 home 下的 **runtime 状态与认证隔离**：`.claude/` 与 `.codex/` 按 agent 隔离；`.gemini/` 则按条目选择性桥接（在存在时符号链接 `GEMINI.md`、`antigravity-cli/settings.json`、`antigravity-cli/keybindings.json` 和 `config/{config.json,mcp_config.json,hooks.json,plugins,agents}`，并在 macOS 上符号链接 `Library/Keychains`），同时保持 `antigravity-cli` 运行时目录（`conversations/`、`brain/`、`cache/`）和 `config/skills/` 按 agent / run 隔离。
 
 每个 agent 的 `$PATH` 下的 `wanman` 包装脚本指向同一个 CLI 二进制文件，但预设了 `WANMAN_AGENT_NAME`，让 agent 视角下不带参数的 `wanman recv` "正好能用"。
 
 ## 9. 共享 skills
 
-`packages/core/skills/*/SKILL.md` 随 runtime bundle 一同发布。supervisor 启动时，`setupSharedSkills()`（位于 `shared-skill-manager.ts`）将它们物化到每个 agent 的 `~/.claude/skills/`，这样 Claude Code 就能自动发现它们。
+`packages/core/skills/*/SKILL.md` 随 runtime bundle 一同发布。supervisor 启动时，共享 skills 会被部署到每个 agent 的 `~/.claude/skills/`、`~/.codex/skills/` 和 `~/.gemini/config/skills/`，以便 Claude Code、Codex 和 Antigravity (`agy`) 自动发现它们。
 
 Skill 快照 —— 绑定到特定 run 的不可变副本 —— 被写入由 `WANMAN_SKILL_SNAPSHOTS_DIR` 解析出的目录，或 shared-skills 目录的同级目录，实在不行回落到 `$TMPDIR/wanman-skill-snapshots`。这个机制让你可以审计某个任务当时到底用的是哪个版本的 skill。
 
@@ -226,7 +231,7 @@ packages/
                core/skills/ ships the SKILL.md bundle.
   host-sdk/    Programmatic embedding SDK for host-side integrations.
   runtime/     The supervisor. Agent process manager, SQLite stores,
-               Claude/Codex adapters, cron scheduler, event router.
+               Claude/Codex/Agy adapters, cron scheduler, event router.
 ```
 
 关于 CLI 接口面和环境变量，见 [README](../README.zh.md#cli-commands)。

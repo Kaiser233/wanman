@@ -6,20 +6,18 @@
  * - `on-demand`   — idle until triggered (cron / steer / message). Each
  *                   trigger starts a fresh, stateless run.
  * - `idle_cached` — idle until triggered (like `on-demand`), but the runtime
- *                   remembers the previous Claude `session_id` and resumes
- *                   it on the next trigger via `claude --resume`. Combines
- *                   "no CPU when idle" with "preserved conversation context".
- *                   **Claude-only.** The resume mechanism depends on Claude
- *                   Code's `system/init` session id and `--resume` flag;
- *                   Codex has no equivalent in this runtime today, so the
- *                   supervisor rejects `idle_cached` paired with a non-Claude
- *                   runtime at startup rather than letting it silently
- *                   degrade to `on-demand` semantics.
+ *                   remembers the previous session id and resumes it on the
+ *                   next trigger (via `claude --resume` or `agy --conversation`).
+ *                   Combines "no CPU when idle" with "preserved conversation
+ *                   context". Supported by Claude and Agy; Codex has no
+ *                   equivalent in this runtime today, so the supervisor
+ *                   rejects `idle_cached` paired with Codex at startup rather
+ *                   than letting it silently degrade to `on-demand` semantics.
  */
 export type AgentLifecycle = '24/7' | 'on-demand' | 'idle_cached';
 
 /** Agent runtime backend */
-export type AgentRuntime = 'claude' | 'codex';
+export type AgentRuntime = 'claude' | 'codex' | 'agy';
 
 /** Codex reasoning effort / speed tier */
 export type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
@@ -155,7 +153,7 @@ export interface ChangeCapsule {
 // ── Auth types ──
 
 /** Supported CLI auth providers */
-export type AuthProviderName = 'github' | 'claude' | 'codex';
+export type AuthProviderName = 'github' | 'claude' | 'codex' | 'agy';
 
 /** Auth status for a provider */
 export type AuthStatus = 'authenticated' | 'unauthenticated' | 'pending' | 'error';

@@ -17,6 +17,8 @@ export interface LocalRunRuntimeOptions {
   runtime?: AgentRuntime
   codexModel?: string
   codexReasoningEffort?: RunOptions['codexReasoningEffort']
+  agyModel?: string
+  agyEffort?: RunOptions['agyEffort']
 }
 
 export interface LocalRunObservationParams {
@@ -69,6 +71,8 @@ export async function runLocalExecution(params: LocalRunExecutorParams): Promise
       runtime: runtime.runtime,
       codexModel: runtime.codexModel,
       codexReasoningEffort: runtime.codexReasoningEffort,
+      ...(runtime.agyModel ? { agyModel: runtime.agyModel } : {}),
+      ...(runtime.agyEffort ? { agyEffort: runtime.agyEffort } : {}),
     },
     keep: opts.keep,
     signalMode: 'exit_process',

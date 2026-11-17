@@ -1,7 +1,10 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { AgentMatrixConfig, AgentRuntime } from '@wanman/core'
+import { normalizeRuntime } from '@wanman/host-sdk'
 import type { ProjectRunSpec, RunOptions } from './execution-session.js'
+
+export { normalizeRuntime } from '@wanman/host-sdk'
 
 export interface RunLaunchPlan {
   requestedProjectDir?: string
@@ -17,13 +20,16 @@ export interface RunSessionPlan {
   sourceLabel: string
   useThirdPartyApi: boolean
   useHybrid: boolean
-  runtimeOverride?: string
+  runtimeOverride?: AgentRuntime
   codexModelOverride?: string
   codexReasoningEffort?: string
+  agyModelOverride?: string
+  agyEffort?: string
   requiredRuntimes: AgentRuntime[]
   runtimeLabel: string
   llmModeLabel: string
   codexConfigLabel: string | null
+  agyConfigLabel: string | null
 }
 
 export function resolveRequestedProjectDir(projectDir?: string): string | undefined {
@@ -69,10 +75,6 @@ export function buildRunBrainName(goal: string): string {
   return `wanman-run-${ts}-${slug}`
 }
 
-export function normalizeRuntime(value?: string | null): AgentRuntime {
-  return value === 'codex' ? 'codex' : 'claude'
-}
-
 export function detectRequiredRuntimes(
   configText: string,
   envRuntime?: string | null,
@@ -95,7 +97,7 @@ export function detectRequiredRuntimes(
 
 export function createRunSessionPlan(args: {
   goal: string
-  opts: Pick<RunOptions, 'runtime' | 'codexModel' | 'codexReasoningEffort' | 'workerUrl'>
+  opts: Pick<RunOptions, 'runtime' | 'codexModel' | 'codexReasoningEffort' | 'agyModel' | 'agyEffort' | 'workerUrl'>
   launchPlan: Pick<RunLaunchPlan, 'projectDir' | 'requestedProjectDir'>
   configName: string
   configText: string
@@ -108,21 +110,33 @@ export function createRunSessionPlan(args: {
   const runId = brainName || `run-${Date.now().toString(36)}`
   const useThirdPartyApi = !!env['ANTHROPIC_BASE_URL']
   const useHybrid = !!args.opts.workerUrl
-  const runtimeOverride = args.opts.runtime ?? env['WANMAN_RUNTIME']
+  const rawRuntimeOverride = args.opts.runtime ?? (env['WANMAN_RUNTIME'] || undefined)
+  const runtimeOverride = rawRuntimeOverride ? normalizeRuntime(rawRuntimeOverride) : undefined
   const codexModelOverride = args.opts.codexModel
     ?? env['WANMAN_CODEX_MODEL']
     ?? (runtimeOverride === 'codex' ? env['WANMAN_MODEL'] : undefined)
   const codexReasoningEffort = args.opts.codexReasoningEffort ?? env['WANMAN_CODEX_REASONING_EFFORT']
-  const requiredRuntimes = detectRequiredRuntimes(args.configText, runtimeOverride)
+  const agyModelOverride = args.opts.agyModel
+    ?? env['WANMAN_AGY_MODEL']
+    ?? (runtimeOverride === 'agy' ? env['WANMAN_MODEL'] : undefined)
+  const agyEffort = args.opts.agyEffort ?? env['WANMAN_AGY_EFFORT']
+  const requiredRuntimes = detectRequiredRuntimes(args.configText, rawRuntimeOverride)
   const runtimeLabel = runtimeOverride || (requiredRuntimes.length === 1 ? requiredRuntimes[0]! : requiredRuntimes.join(', '))
+  const allCodex = requiredRuntimes.every(runtime => runtime === 'codex')
+  const allAgy = requiredRuntimes.every(runtime => runtime === 'agy')
   const llmModeLabel = useHybrid
     ? 'hybrid-worker'
-    : requiredRuntimes.every(runtime => runtime === 'codex')
+    : allCodex
       ? 'codex-cli'
-      : useThirdPartyApi
-        ? 'anthropic-compatible'
-        : 'claude-cli'
+      : allAgy
+        ? 'agy-cli'
+        : requiredRuntimes.length > 1
+          ? 'multi-runtime'
+          : useThirdPartyApi
+            ? 'anthropic-compatible'
+            : 'claude-cli'
   const shouldShowCodexConfig = runtimeOverride === 'codex' || requiredRuntimes.some(runtime => runtime === 'codex')
+  const shouldShowAgyConfig = runtimeOverride === 'agy' || requiredRuntimes.some(runtime => runtime === 'agy')
 
   return {
     brainName,
@@ -134,11 +148,16 @@ export function createRunSessionPlan(args: {
     runtimeOverride,
     codexModelOverride,
     codexReasoningEffort,
+    agyModelOverride,
+    agyEffort,
     requiredRuntimes,
     runtimeLabel,
     llmModeLabel,
     codexConfigLabel: shouldShowCodexConfig
       ? `${codexModelOverride ?? 'default'} / ${codexReasoningEffort ?? 'default'}`
+      : null,
+    agyConfigLabel: shouldShowAgyConfig
+      ? `${agyModelOverride ?? 'default'} / ${agyEffort ?? 'default'}`
       : null,
   }
 }

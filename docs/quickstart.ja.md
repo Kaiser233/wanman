@@ -8,9 +8,10 @@
 
 - **Node.js 20+** と **pnpm 9+**（`corepack enable && corepack prepare pnpm@9.15.0 --activate`）。
 - **git**。
-- 認証済みの Claude Code CLI *もしくは* Codex CLI — wanman はこれらをエージェントのサブプロセスとして spawn し、それらが既に持つ認証に依存します。
+- 認証済みの Claude Code、Codex、*もしくは* Antigravity (`agy`) CLI — wanman はこれらをエージェントのサブプロセスとして spawn し、ホスト上の既存認証を利用します。
   - Claude Code: `@anthropic-ai/claude-code` をグローバルインストールし、ログインフローを実行します（`claude` を実行してプロンプトに従う）。
   - Codex: `@openai/codex` をグローバルインストールし、Codex CLI のドキュメントに従ってサインインします。
+  - Antigravity (`agy`): `agy`（`PATH`、`~/.local/bin/agy`、または `WANMAN_AGY_BIN`）を用意し、ホストでの対話ログイン（macOS キーチェーン認証情報、例: service `gemini` / account `antigravity`）、`AGY_ADC_AUTH=true`、または `~/.gemini/antigravity-cli/settings.json` で `"modelProvider": "gemini"` を設定したうえで `GEMINI_API_KEY` を設定して認証します。
 - **任意の既存 git リポジトリ** — エージェントに読み書きさせてよいもの。wanman はそれを隔離されたワークツリーにコピーし、あなたの汚れた作業コピーを変更することはありません。
 
 オプション:
@@ -51,11 +52,13 @@ wanman takeover .
 4. 隔離された `.wanman/home/` 以下でエージェント（デフォルトでは Claude Code サブプロセス）を spawn し、シェルプロファイルの変更があなたの実際の `$HOME` に漏れないようにします。
 5. takeover はフォアグラウンドに留まり、エージェントの活動をストリーミング表示します。
 
-`--runtime` で runtime を選択できます:
+`--runtime` で runtime を選択できます（モデルや推論強度の指定も可能）：
 
 ```bash
 wanman takeover . --runtime claude   # デフォルト
 wanman takeover . --runtime codex
+wanman takeover . --runtime agy      # エイリアス: atg, antigravity
+wanman takeover . --runtime agy --agy-model gemini-3.8-flash-low --agy-effort high
 ```
 
 ## 4. matrix と対話する

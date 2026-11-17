@@ -1,5 +1,5 @@
 import type { AgentRuntime } from '@wanman/core'
-import type { RunOptions } from './run-options.js'
+import type { AgyEffort, RunOptions } from './run-options.js'
 
 export interface WanmanHostSdkConfig {
   env?: NodeJS.ProcessEnv
@@ -11,6 +11,8 @@ export interface WanmanHostTakeoverOptions {
   projectPath: string
   goalOverride?: string
   runtime?: AgentRuntime
+  agyModel?: string
+  agyEffort?: AgyEffort
   githubToken?: string
   enableBrain?: boolean
 }

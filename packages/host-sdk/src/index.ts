@@ -8,9 +8,10 @@ export type {
   WanmanHostRunOptions,
   WanmanHostTakeoverOptions,
 } from './host-sdk-types.js'
-export type { RunOptions } from './run-options.js'
+export type { AgyEffort, RunOptions } from './run-options.js'
 export {
   createDefaultRunOptions,
   createRunOptions,
   createTakeoverRunOptions,
+  normalizeRuntime,
 } from './run-options.js'

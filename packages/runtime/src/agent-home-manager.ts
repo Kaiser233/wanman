@@ -15,6 +15,11 @@ const DEFAULT_HOME_ENTRIES = [
   '.kube',
 ] as const
 
+const GEMINI_SETTINGS_FILES = [
+  'settings.json',
+  'keybindings.json',
+] as const
+
 export class AgentHomeManager {
   private baseHome: string
   private homesRoot: string
@@ -32,6 +37,14 @@ export class AgentHomeManager {
       this.syncHomeEntry(path.join(this.baseHome, entry), path.join(agentHome, entry))
     }
 
+    if (process.platform === 'darwin') {
+      const keychainsSource = path.join(this.baseHome, 'Library', 'Keychains')
+      if (fs.existsSync(keychainsSource)) {
+        fs.mkdirSync(path.join(agentHome, 'Library'), { recursive: true })
+        this.syncHomeEntry(keychainsSource, path.join(agentHome, 'Library', 'Keychains'))
+      }
+    }
+
     const skillSource = snapshot
       ? snapshot.materializedPath
       : this.ensureEmptySkillsDir(agentHome)
@@ -44,6 +57,8 @@ export class AgentHomeManager {
       this.linkSkillsDir(path.join(targetRoot, 'skills'), skillSource)
     }
 
+    this.prepareGeminiHome(agentHome, skillSource)
+
     log.info('prepared isolated agent home', {
       agent: agentName,
       home: agentHome,
@@ -52,6 +67,30 @@ export class AgentHomeManager {
     })
 
     return agentHome
+  }
+
+  private prepareGeminiHome(agentHome: string, skillSource: string): void {
+    const geminiSourceRoot = path.join(this.baseHome, '.gemini')
+    const geminiTargetRoot = path.join(agentHome, '.gemini')
+    const geminiConfigTarget = path.join(geminiTargetRoot, 'config')
+    const geminiCliTarget = path.join(geminiTargetRoot, 'antigravity-cli')
+
+    fs.mkdirSync(geminiConfigTarget, { recursive: true })
+    fs.mkdirSync(geminiCliTarget, { recursive: true })
+
+    this.syncHomeEntry(
+      path.join(geminiSourceRoot, 'GEMINI.md'),
+      path.join(geminiTargetRoot, 'GEMINI.md'),
+    )
+    this.syncRuntimeHome(path.join(geminiSourceRoot, 'config'), geminiConfigTarget)
+    this.linkSkillsDir(path.join(geminiConfigTarget, 'skills'), skillSource)
+
+    for (const file of GEMINI_SETTINGS_FILES) {
+      this.syncHomeEntry(
+        path.join(geminiSourceRoot, 'antigravity-cli', file),
+        path.join(geminiCliTarget, file),
+      )
+    }
   }
 
   cleanupHomes(): void {

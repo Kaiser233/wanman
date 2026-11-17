@@ -3,8 +3,8 @@ import * as net from 'node:net'
 import * as path from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import type { AgentMatrixConfig } from '@wanman/core'
-import type { AgentRuntime } from '@wanman/core'
+import type { AgentMatrixConfig, AgentRuntime } from '@wanman/core'
+import type { AgyEffort } from '@wanman/host-sdk'
 import { createLocalRuntimeClient, type RuntimeClient } from './runtime-client.js'
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url))
@@ -19,6 +19,8 @@ export interface LocalSupervisorOptions {
   runtime?: AgentRuntime
   codexModel?: string
   codexReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
+  agyModel?: string
+  agyEffort?: AgyEffort
   /** @internal test/embedded override; defaults to the built runtime entrypoint. */
   runtimeEntrypoint?: string
   /** @internal test/embedded override; defaults to the current CLI entrypoint. */
@@ -100,9 +102,54 @@ async function pickAvailablePort(): Promise<number> {
 /** @internal exported for testing */
 export function syncHomeEntry(source: string, target: string): void {
   if (!fs.existsSync(source)) return
+  fs.mkdirSync(path.dirname(target), { recursive: true })
   fs.rmSync(target, { recursive: true, force: true })
   const stat = fs.statSync(source)
   fs.symlinkSync(source, target, stat.isDirectory() ? 'dir' : 'file')
+}
+
+function bridgeGeminiConfig(realHome: string, agentHome: string): void {
+  const realGeminiDir = path.join(realHome, '.gemini')
+  const agentGeminiDir = path.join(agentHome, '.gemini')
+  const agentGeminiCliDir = path.join(agentGeminiDir, 'antigravity-cli')
+  const agentGeminiConfigDir = path.join(agentGeminiDir, 'config')
+  // Keep .gemini, antigravity-cli, and config as real per-run directories so shared
+  // skills and per-agent runtime state (conversations, cache) stay isolated from host ~/.gemini.
+  fs.mkdirSync(agentGeminiCliDir, { recursive: true })
+  fs.mkdirSync(agentGeminiConfigDir, { recursive: true })
+  if (!fs.existsSync(realGeminiDir)) return
+
+  syncHomeEntry(path.join(realGeminiDir, 'GEMINI.md'), path.join(agentGeminiDir, 'GEMINI.md'))
+  for (const entry of ['settings.json', 'keybindings.json']) {
+    syncHomeEntry(
+      path.join(realGeminiDir, 'antigravity-cli', entry),
+      path.join(agentGeminiCliDir, entry),
+    )
+  }
+  for (const entry of ['config.json', 'mcp_config.json', 'hooks.json', 'plugins', 'agents']) {
+    syncHomeEntry(
+      path.join(realGeminiDir, 'config', entry),
+      path.join(agentGeminiConfigDir, entry),
+    )
+  }
+}
+
+function resolveHostAgyBinary(baseEnv: NodeJS.ProcessEnv): string | undefined {
+  if (baseEnv['WANMAN_AGY_BIN']) return undefined
+  const pathDirs = (baseEnv['PATH'] || '').split(path.delimiter).filter(Boolean)
+  const onPath = pathDirs.some(dir => {
+    try {
+      const candidate = path.join(dir, 'agy')
+      return fs.existsSync(candidate) && fs.statSync(candidate).isFile()
+    } catch {
+      return false
+    }
+  })
+  if (onPath) return undefined
+  const realHome = baseEnv['HOME']
+  if (!realHome) return undefined
+  const localBinAgy = path.join(realHome, '.local', 'bin', 'agy')
+  return fs.existsSync(localBinAgy) ? localBinAgy : undefined
 }
 
 export function resolveRuntimeEntrypoint(moduleDir: string = MODULE_DIR): string {
@@ -137,7 +184,11 @@ export function resolveCliEntrypoint(
 
 /** @internal exported for testing */
 export function installSharedSkills(sharedSkillsDir: string, agentHome: string): void {
-  for (const target of [`${agentHome}/.claude/skills`, `${agentHome}/.codex/skills`]) {
+  for (const target of [
+    `${agentHome}/.claude/skills`,
+    `${agentHome}/.codex/skills`,
+    `${agentHome}/.gemini/config/skills`,
+  ]) {
     for (const skillDir of fs.readdirSync(sharedSkillsDir)) {
       const src = path.join(sharedSkillsDir, skillDir)
       if (!fs.statSync(src).isDirectory()) continue
@@ -176,6 +227,10 @@ export function createHomeLayout(
   for (const entry of ['.codex', '.claude', '.config', '.gitconfig', '.git-credentials', '.ssh']) {
     syncHomeEntry(path.join(home, entry), path.join(agentHome, entry))
   }
+  if (process.platform === 'darwin') {
+    syncHomeEntry(path.join(home, 'Library', 'Keychains'), path.join(agentHome, 'Library', 'Keychains'))
+  }
+  bridgeGeminiConfig(home, agentHome)
   fs.writeFileSync(path.join(agentHome, '.bash_profile'), `export PATH=${JSON.stringify(binDir)}:$PATH\n`)
 
   return { agentHome, binDir }
@@ -190,6 +245,7 @@ export function buildLocalSupervisorEnv(
   port: number,
 ): NodeJS.ProcessEnv {
   const env = { ...baseEnv }
+  const agyBin = resolveHostAgyBinary(baseEnv)
 
   // Do not leak outer Codex session controls into the nested local supervisor.
   delete env['CODEX_CI']
@@ -210,6 +266,9 @@ export function buildLocalSupervisorEnv(
     ...(opts.runtime ? { WANMAN_RUNTIME: opts.runtime } : {}),
     ...(opts.codexModel ? { WANMAN_CODEX_MODEL: opts.codexModel } : {}),
     ...(opts.codexReasoningEffort ? { WANMAN_CODEX_REASONING_EFFORT: opts.codexReasoningEffort } : {}),
+    ...(opts.agyModel ? { WANMAN_AGY_MODEL: opts.agyModel } : {}),
+    ...(opts.agyEffort ? { WANMAN_AGY_EFFORT: opts.agyEffort } : {}),
+    ...(agyBin ? { WANMAN_AGY_BIN: agyBin } : {}),
   }
 }
 

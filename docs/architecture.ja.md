@@ -18,13 +18,13 @@
                                 |                                |
                                 |  +--------------------------+  |
                                 |  |  AgentProcess[]          |  |
-                                |  |  (spawns Claude/Codex    |  |
-                                |  |   CLI children)          |  |
+                                |  |  (spawns Claude/Codex/   |  |
+                                |  |   Agy CLI children)      |  |
                                 |  +--------------------------+  |
                                 +----------------+---------------+
                                                  |
                                                  v
-                                    Claude Code / Codex subprocess
+                                    Claude / Codex / Agy subprocess
                                     (per-agent worktree + $HOME)
 ```
 
@@ -40,7 +40,7 @@ CLI は薄い JSON-RPC 2.0 クライアントです。興味深いもの — プ
 start()
   +-> runLoop()
         +- relay.recv()            -- pull pending messages
-        +- spawnClaudeOrCodex()    -- boot the CLI subprocess with those as prompt
+        +- spawnAgent()            -- boot the CLI subprocess with those as prompt
         +- wait()                  -- block until the subprocess exits
         +- sleep(RESPAWN_DELAY_MS) -- cooldown
         +- repeat
@@ -57,7 +57,7 @@ start()
   +-> state = 'idle'   (no CLI subprocess running)
         +- trigger() or handleSteer()
              +- relay.recv()
-             +- spawnClaudeOrCodex()
+             +- spawnAgent()
              +- wait()
         +- state = 'idle' again
 ```
@@ -65,12 +65,16 @@ start()
 - 初期状態は `idle` で、何かがつつくまで CPU は消費しません。
 - steer 優先度のメッセージや cron tick が単一実行をトリガーし、完了後は `idle` に戻ります。
 
-### 2.3 エージェントの状態
+### 2.3 `idle_cached` — コンテキストを引き継ぐアイドル実行（Claude / Agy）
+
+- `on-demand` と同じく待機中は CPU を消費しませんが、次回起動時に捕捉済みセッション ID を `claude --resume <id>` または `agy --conversation <id>` で渡して会話コンテキストを引き継ぎます（`runtime: codex` は非対応）。
+
+### 2.4 エージェントの状態
 
 | State | 意味 |
 |-------|---------|
 | `idle` | 待機中（on-demand の通常状態）。 |
-| `running` | Claude Code または Codex サブプロセスが実行中です。 |
+| `running` | Claude Code、Codex、または Antigravity (`agy`) サブプロセスが実行中です。 |
 | `stopped` | 手動停止、または終了処理中です。 |
 | `error` | 直近でクラッシュ。スーパーバイザーがリトライします。 |
 
@@ -96,7 +100,7 @@ sender                        Relay                         target agent
   |                             |                 (next loop)   |
   |                             |                               |-- relay.recv()
   |                             |                               |   (steer sorted first)
-  |                             |                               |-- spawnClaudeOrCodex(steerMsg)
+  |                             |                               |-- spawnAgent(steerMsg)
 ```
 
 relay の steer コールバックは `AgentProcess` に現在の Claude/Codex 子プロセスを SIGKILL するよう指示します。ランループ通常の再生成パスは、SQL の並び順のおかげで steer メッセージを最初に拾い上げます。
@@ -159,12 +163,13 @@ RPC メソッド: `context.get`、`context.set`、`context.list`。`set` は ups
 
 ## 7. Runtime アダプタ
 
-各エージェントの子プロセスは Claude Code または Codex サブプロセスです。スーパーバイザーは `WANMAN_RUNTIME`（デフォルト `claude`）およびエージェントごとの上書き（もしあれば）を介して選択します。
+各エージェントの子プロセスは Claude Code、Codex、または Antigravity (`agy`) サブプロセスです。スーパーバイザーは `WANMAN_RUNTIME`（デフォルト `claude`、`codex`、または `agy`〔エイリアス: `atg`、`antigravity`〕）およびエージェントごとの上書きを介して選択します。
 
 - `claude-adapter.ts` / `claude-code.ts` — エージェントのシステムプロンプトとともに `claude` を spawn し、skill ファイルを注入し、構造化イベントをスーパーバイザーにストリーミングします。
 - `codex-adapter.ts` — 同じ形状で `@openai/codex` を対象とします。`WANMAN_CODEX_MODEL` と `WANMAN_CODEX_REASONING_EFFORT` でモデル選択を制御します。
+- `agy-adapter.ts` — Antigravity CLI（`agy --input-format stream-json --output-format stream-json --dangerously-skip-permissions`）を対象とし、`WANMAN_AGY_BIN`、`PATH`、`~/.local/bin/agy` の順でバイナリを解決します。`WANMAN_AGY_MODEL`、`WANMAN_AGY_HIGH_MODEL`、`WANMAN_AGY_STANDARD_MODEL`、`WANMAN_AGY_EFFORT` でモデル・推論強度を制御し、`AGY_CLI_DISABLE_AUTO_UPDATE=true` と `AGY_CLI_HIDE_LOGO=true` を自動設定します。
 
-両アダプタは同一の `AgentRunEvent` ストリームを発行するため、スーパーバイザーと CLI はどちらが動いているかを気にしません。新しいアダプタの追加は、そのイベント契約を実装し `agent-process.ts` に登録するだけです。
+すべてのアダプタが同一の `AgentRunEvent` ストリームを発行するため、スーパーバイザーと CLI はどちらが動いているかを気にしません。新しいアダプタの追加は、そのイベント契約を実装し `agent-adapter.ts` / `agent-process.ts` に登録するだけです。
 
 ## 8. ワークツリーと home の隔離
 
@@ -172,13 +177,13 @@ RPC メソッド: `context.get`、`context.set`、`context.list`。`set` は ups
 
 - `.wanman/worktree/` 配下に現在の `HEAD` から展開した**ワークツリー**。エージェントはあなたの実際のチェックアウトではなくこれを編集します。
 - `.wanman/home/<agent>/` 配下の**エージェントごとの `$HOME`**。生成された `wanman` と `pnpm` ラッパーを備えます。シェルプロファイルへの書き込みや `.npmrc` の編集などはすべてこの中に封じ込められます。
-- その home 配下の**エージェントごとの `.claude/`**（あるいは `.codex/`）。2 つのエージェントが互いの CLI 状態を踏まないようにします。
+- その home 配下の**エージェントごとの認証・状態ディレクトリ**: `.claude/` と `.codex/` はエージェントごとに分離し、`.gemini/` は選択的にブリッジします（存在すれば `GEMINI.md`、`antigravity-cli/settings.json`、`antigravity-cli/keybindings.json`、`config/{config.json,mcp_config.json,hooks.json,plugins,agents}` をシンボリックリンクし、macOS では `Library/Keychains` もリンクしつつ、`antigravity-cli` の実行状態 `conversations/`・`brain/`・`cache/` と `config/skills/` はエージェント/ランごとに隔離します）。
 
 各エージェントの `$PATH` 内の `wanman` ラッパーは同じ CLI バイナリを指しますが、事前に `WANMAN_AGENT_NAME` をセットしています。そのためエージェントから見ると、引数なしの `wanman recv` が「そのまま動く」ようになっています。
 
 ## 9. Shared skills
 
-`packages/core/skills/*/SKILL.md` は runtime バンドルと一緒に配布されます。スーパーバイザー起動時、`setupSharedSkills()`（`shared-skill-manager.ts` 内）がそれらを各エージェントの `~/.claude/skills/` に展開し、Claude Code が自動検出できるようにします。
+`packages/core/skills/*/SKILL.md` は runtime バンドルと一緒に配布されます。スーパーバイザー起動時、共有 skill は各エージェントの `~/.claude/skills/`、`~/.codex/skills/`、`~/.gemini/config/skills/` に展開され、Claude Code、Codex、Antigravity (`agy`) から自動検出されます。
 
 Skill スナップショット — 特定のランに紐付けられた不変コピー — は、`WANMAN_SKILL_SNAPSHOTS_DIR` で解決されるディレクトリ、または shared-skills ディレクトリの兄弟、あるいは最後の手段として `$TMPDIR/wanman-skill-snapshots` に書き出されます。これが、所与のタスクでエージェントが利用できた skill のバージョンを正確に監査できる仕組みです。
 
@@ -226,7 +231,7 @@ packages/
                core/skills/ ships the SKILL.md bundle.
   host-sdk/    Programmatic embedding SDK for host-side integrations.
   runtime/     The supervisor. Agent process manager, SQLite stores,
-               Claude/Codex adapters, cron scheduler, event router.
+               Claude/Codex/Agy adapters, cron scheduler, event router.
 ```
 
 CLI サーフェスおよび環境変数については [README](../README.ja.md#cli-コマンド) を参照してください。

@@ -38,6 +38,7 @@ function setSpawnResumeMissed(idx: number, missed: boolean) {
 
 const mockKill = vi.fn()
 const codexStartRunMock = vi.hoisted(() => vi.fn())
+const agyStartRunMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../claude-code.js', () => ({
   spawnClaudeCode: vi.fn(() => {
@@ -100,6 +101,46 @@ vi.mock('../codex-adapter.js', () => ({
   }),
 }))
 
+vi.mock('../agy-adapter.js', () => ({
+  AgyAdapter: vi.fn().mockImplementation(function AgyAdapterMock() {
+    return {
+      runtime: 'agy',
+      startRun: vi.fn((opts) => {
+      agyStartRunMock(opts)
+      const idx = spawnCallCount++
+      if (!waitDeferreds[idx]) {
+        waitDeferreds[idx] = deferred<number>()
+      }
+      const handlers: { event?: (event: Record<string, unknown>) => void } = {}
+      const sessionIdHandlers: Array<(id: string) => void> = []
+      const exitHandlers: Array<(code: number) => void> = []
+      eventHandlers[idx] = (event) => handlers.event?.(event)
+      sessionIdReporters[idx] = (id) => {
+        for (const h of sessionIdHandlers) h(id)
+      }
+      exitReporters[idx] = (code) => {
+        for (const h of exitHandlers) h(code)
+      }
+      return {
+        proc: { pid: 12345, stdin: { end: vi.fn() } },
+        wait: vi.fn(async () => {
+          const code = await waitDeferreds[idx]!.promise
+          for (const h of exitHandlers) h(code)
+          return code
+        }),
+        kill: mockKill,
+        sendMessage: vi.fn(),
+        onEvent: vi.fn((handler) => { handlers.event = handler }),
+        onResult: vi.fn(),
+        onSessionId: vi.fn((handler) => { sessionIdHandlers.push(handler) }),
+        onExit: vi.fn((handler) => { exitHandlers.push(handler) }),
+        resumeMissed: vi.fn(() => resumeMissedFlags[idx] ?? false),
+      }
+      }),
+    }
+  }),
+}))
+
 // Mock logger
 vi.mock('../logger.js', () => ({
   createLogger: () => ({
@@ -132,6 +173,7 @@ describe('AgentProcess', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     codexStartRunMock.mockClear()
+    agyStartRunMock.mockClear()
     waitDeferreds = []
     eventHandlers = []
     sessionIdReporters = []
@@ -187,6 +229,16 @@ describe('AgentProcess', () => {
     it('accepts idle_cached + claude runtime', () => {
       const agent = new AgentProcess(
         makeDef({ name: 'support', lifecycle: 'idle_cached', runtime: 'claude' }),
+        relay,
+        '/tmp/work',
+      )
+      expect(agent.state).toBe('idle')
+      expect(agent.definition.lifecycle).toBe('idle_cached')
+    })
+
+    it('accepts idle_cached + agy runtime', () => {
+      const agent = new AgentProcess(
+        makeDef({ name: 'support', lifecycle: 'idle_cached', runtime: 'agy' }),
         relay,
         '/tmp/work',
       )
@@ -636,6 +688,45 @@ describe('AgentProcess', () => {
       }))
     })
 
+    it('passes Agy model resolution, effort, and idle_cached conversation resume', async () => {
+      waitDeferreds[0] = deferred<number>()
+      waitDeferreds[1] = deferred<number>()
+
+      const agent = new AgentProcess(
+        makeDef({ lifecycle: 'idle_cached', runtime: 'agy', model: 'high' }),
+        relay,
+        '/tmp',
+        undefined,
+        {
+          WANMAN_AGY_EFFORT: 'max',
+        },
+      )
+
+      relay.send('alice', 'test-agent', 'message', 'msg1', 'normal')
+      const t1 = agent.trigger()
+      await new Promise(r => setTimeout(r, 5))
+      sessionIdReporters[0]!('conv-agy-1')
+      waitDeferreds[0].resolve(0)
+      await t1
+
+      relay.send('alice', 'test-agent', 'message', 'msg2', 'normal')
+      const t2 = agent.trigger()
+      await new Promise(r => setTimeout(r, 5))
+      waitDeferreds[1].resolve(0)
+      await t2
+
+      expect(agyStartRunMock).toHaveBeenNthCalledWith(1, expect.objectContaining({
+        runtime: 'agy',
+        model: 'gemini-4-hydrogen-high',
+        reasoningEffort: 'max',
+      }))
+      expect(agyStartRunMock.mock.calls[0]![0].resumeSessionId).toBeUndefined()
+      expect(agyStartRunMock).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        runtime: 'agy',
+        resumeSessionId: 'conv-agy-1',
+      }))
+    })
+
     it('handles all runtime event log formats without interrupting the run', async () => {
       relay.send('ceo', 'test-agent', 'message', 'do work', 'normal')
 
@@ -891,6 +982,45 @@ describe('AgentProcess', () => {
       expect(callbacks[0]!.inputTokens).toBe(26549)
       expect(callbacks[0]!.outputTokens).toBe(1590)
       expect(callbacks[0]!.totalTokens).toBe(28139)
+    })
+
+    it('should capture Agy token totals from normalized result events', async () => {
+      relay.send('ceo', 'test-agent', 'message', 'do agy work', 'normal')
+
+      const callbacks: Array<{ inputTokens: number; outputTokens: number; totalTokens: number }> = []
+      const agent = new AgentProcess(
+        makeDef({ runtime: 'agy' }), relay, '/tmp',
+        undefined, undefined, undefined, undefined,
+        (info) => callbacks.push(info),
+      )
+
+      waitDeferreds[0] = deferred<number>()
+      const triggerPromise = agent.trigger()
+      await new Promise(r => setTimeout(r, 0))
+      eventHandlers[0]?.({
+        type: 'step_update',
+        tool_name: 'read_file',
+        tool_input: { Path: '/tmp/hello.txt' },
+      })
+      eventHandlers[0]?.({
+        type: 'result',
+        is_error: false,
+        duration_ms: 420,
+        usage: {
+          input_tokens: 10055,
+          output_tokens: 120,
+          thinking_tokens: 0,
+          cache_read_tokens: 0,
+          total_tokens: 10175,
+        },
+      })
+      waitDeferreds[0].resolve(0)
+      await triggerPromise
+
+      expect(callbacks).toHaveLength(1)
+      expect(callbacks[0]!.inputTokens).toBe(10055)
+      expect(callbacks[0]!.outputTokens).toBe(120)
+      expect(callbacks[0]!.totalTokens).toBe(10175)
     })
 
     it('should report errored=true when exit code is non-zero', async () => {

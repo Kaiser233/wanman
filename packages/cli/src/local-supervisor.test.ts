@@ -160,6 +160,7 @@ describe('local supervisor home layout helpers', () => {
 
     expect(fs.readFileSync(path.join(agentHome, '.claude', 'skills', 'takeover-context', 'SKILL.md'), 'utf-8')).toBe('# Takeover\n')
     expect(fs.readFileSync(path.join(agentHome, '.codex', 'skills', 'takeover-context', 'SKILL.md'), 'utf-8')).toBe('# Takeover\n')
+    expect(fs.readFileSync(path.join(agentHome, '.gemini', 'config', 'skills', 'takeover-context', 'SKILL.md'), 'utf-8')).toBe('# Takeover\n')
   })
 
   it('creates wrappers and links selected host home entries', () => {
@@ -168,6 +169,17 @@ describe('local supervisor home layout helpers', () => {
     const cliEntrypoint = path.join(homeRoot, 'host-cli.js')
     fs.writeFileSync(cliEntrypoint, '')
     fs.mkdirSync(path.join(hostHome, '.config'))
+    fs.mkdirSync(path.join(hostHome, '.gemini', 'antigravity-cli', 'conversations'), { recursive: true })
+    fs.mkdirSync(path.join(hostHome, '.gemini', 'config', 'plugins'), { recursive: true })
+    fs.writeFileSync(path.join(hostHome, '.gemini', 'GEMINI.md'), '# Gemini Rules\n')
+    fs.writeFileSync(path.join(hostHome, '.gemini', 'antigravity-cli', 'settings.json'), '{"modelProvider":"antigravity"}\n')
+    fs.writeFileSync(path.join(hostHome, '.gemini', 'antigravity-cli', 'keybindings.json'), '[]\n')
+    fs.writeFileSync(path.join(hostHome, '.gemini', 'config', 'config.json'), '{}\n')
+    fs.writeFileSync(path.join(hostHome, '.gemini', 'config', 'mcp_config.json'), '{}\n')
+    fs.writeFileSync(path.join(hostHome, '.gemini', 'config', 'hooks.json'), '{}\n')
+    if (process.platform === 'darwin') {
+      fs.mkdirSync(path.join(hostHome, 'Library', 'Keychains'), { recursive: true })
+    }
 
     const layout = createHomeLayout(homeRoot, {
       home: hostHome,
@@ -179,6 +191,21 @@ describe('local supervisor home layout helpers', () => {
     expect(fs.statSync(wanmanWrapper).mode & 0o111).toBeGreaterThan(0)
     expect(fs.lstatSync(path.join(layout.agentHome, '.config')).isSymbolicLink()).toBe(true)
     expect(fs.readFileSync(path.join(layout.agentHome, '.bash_profile'), 'utf-8')).toContain(layout.binDir)
+
+    expect(fs.lstatSync(path.join(layout.agentHome, '.gemini')).isSymbolicLink()).toBe(false)
+    expect(fs.lstatSync(path.join(layout.agentHome, '.gemini', 'antigravity-cli')).isSymbolicLink()).toBe(false)
+    expect(fs.lstatSync(path.join(layout.agentHome, '.gemini', 'config')).isSymbolicLink()).toBe(false)
+    expect(fs.lstatSync(path.join(layout.agentHome, '.gemini', 'GEMINI.md')).isSymbolicLink()).toBe(true)
+    expect(fs.lstatSync(path.join(layout.agentHome, '.gemini', 'antigravity-cli', 'settings.json')).isSymbolicLink()).toBe(true)
+    expect(fs.lstatSync(path.join(layout.agentHome, '.gemini', 'antigravity-cli', 'keybindings.json')).isSymbolicLink()).toBe(true)
+    expect(fs.lstatSync(path.join(layout.agentHome, '.gemini', 'config', 'config.json')).isSymbolicLink()).toBe(true)
+    expect(fs.lstatSync(path.join(layout.agentHome, '.gemini', 'config', 'mcp_config.json')).isSymbolicLink()).toBe(true)
+    expect(fs.lstatSync(path.join(layout.agentHome, '.gemini', 'config', 'hooks.json')).isSymbolicLink()).toBe(true)
+    expect(fs.lstatSync(path.join(layout.agentHome, '.gemini', 'config', 'plugins')).isSymbolicLink()).toBe(true)
+    expect(fs.existsSync(path.join(layout.agentHome, '.gemini', 'antigravity-cli', 'conversations'))).toBe(false)
+    if (process.platform === 'darwin') {
+      expect(fs.lstatSync(path.join(layout.agentHome, 'Library', 'Keychains')).isSymbolicLink()).toBe(true)
+    }
   })
 })
 
@@ -215,5 +242,38 @@ describe('buildLocalSupervisorEnv', () => {
     expect(env['CODEX_CI']).toBeUndefined()
     expect(env['CODEX_SANDBOX_NETWORK_DISABLED']).toBeUndefined()
     expect(env['CODEX_THREAD_ID']).toBeUndefined()
+  })
+
+  it('sets agy model, effort, and host ~/.local/bin/agy fallback when agy is not on PATH', () => {
+    const hostHome = fs.mkdtempSync(path.join(tmpdir(), 'wanman-agy-home-'))
+    try {
+      const localBin = path.join(hostHome, '.local', 'bin')
+      fs.mkdirSync(localBin, { recursive: true })
+      const agyBin = path.join(localBin, 'agy')
+      fs.writeFileSync(agyBin, '#!/bin/sh\n')
+
+      const env = buildLocalSupervisorEnv({
+        HOME: hostHome,
+        PATH: '/usr/bin',
+      }, {
+        configPath: '/tmp/agents.json',
+        workspaceRoot: '/tmp/agents',
+        gitRoot: '/tmp/repo',
+        sharedSkillsDir: '/tmp/skills',
+        homeRoot: '/tmp/home-root',
+        runtime: 'agy',
+        agyModel: 'gemini-3.8-flash-low',
+        agyEffort: 'max',
+      }, '/tmp/agent-home', '/tmp/bin', 3333)
+
+      expect(env['HOME']).toBe('/tmp/agent-home')
+      expect(env['PATH']).toBe('/tmp/bin:/usr/bin')
+      expect(env['WANMAN_RUNTIME']).toBe('agy')
+      expect(env['WANMAN_AGY_MODEL']).toBe('gemini-3.8-flash-low')
+      expect(env['WANMAN_AGY_EFFORT']).toBe('max')
+      expect(env['WANMAN_AGY_BIN']).toBe(agyBin)
+    } finally {
+      fs.rmSync(hostHome, { recursive: true, force: true })
+    }
   })
 })

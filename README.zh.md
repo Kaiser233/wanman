@@ -2,9 +2,9 @@
 
 [English](README.md) | **中文** | [日本語](README.ja.md)
 
-Agent Matrix 框架 —— 运行一个受监督的 Claude Code 或 Codex agent 网络，让它们在你的机器上协同工作。
+Agent Matrix 框架 —— 运行一个受监督的 Claude Code、Codex 或 Antigravity (`agy`) agent 网络，让它们在你的机器上协同工作。
 
-wanman 是一个开源的本地模式 agent matrix 框架。它在你的机器上运行一个受监督的 Claude Code 或 Codex agent 网络，通过一个 JSON-RPC supervisor 进行协调。
+wanman 是一个开源的本地模式 agent matrix 框架。它在你的机器上运行一个受监督的 Claude Code、Codex 或 Antigravity (`agy`) agent 网络，通过一个 JSON-RPC supervisor 进行协调。
 
 ## 关于 wanman
 
@@ -15,7 +15,7 @@ wanman 这个名字来自日语里的 [ワンマン电车 / one-man train](https
 ## 它做什么
 
 - 通过带 steer / follow-up 优先级的异步消息总线，协调多个 agent（CEO、dev、devops、marketing、feedback 等）。
-- 将每个 agent 作为真实的 Claude Code 或 Codex CLI 子进程运行 —— 你自备 CLI 认证，wanman 负责编排生成、提示和生命周期。
+- 将每个 agent 作为真实的 Claude Code、Codex 或 Antigravity (`agy`) CLI 子进程运行 —— 你自备 CLI 认证，wanman 负责编排生成、提示和生命周期。
 - 将每个 agent 隔离在独立的 worktree 和独立的 `$HOME` 中，这样 agent 绝不会修改你未提交的工作区或 shell 配置文件。
 - CLI 优先：一切都可通过 `wanman` 命令和 JSON-RPC supervisor 脚本化、可观测、可复现。
 
@@ -28,7 +28,7 @@ wanman 这个名字来自日语里的 [ワンマン电车 / one-man train](https
 ## 快速开始
 
 ```bash
-# 前置条件：Node 20+、pnpm 9+、git，以及已登录的 Claude Code 或 Codex CLI。
+# 前置条件：Node 20+、pnpm 9+、git，以及已登录的 Claude Code、Codex 或 Antigravity (agy) CLI。
 git clone git@github.com:chekusu/wanman.git wanman.dev
 cd wanman.dev
 pnpm install
@@ -75,7 +75,7 @@ node packages/cli/dist/wanman.mjs takeover /path/to/any/git/repo
 ```
 +----------------+          +--------------------+          +-----------------+
 |  wanman CLI    |  JSON    |  Supervisor        |  spawn   |  Agent process  |
-|  (host shell)  | ---RPC-->|  (local process)   | -------> |  (Claude/Codex) |
+|  (host shell)  | ---RPC-->|  (local process)   | -------> | (Claude/Codex/Agy)|
 |                |  /rpc    |  message/context/  |          |  per-agent $HOME|
 |                |          |  task/artifact     |          |  per-agent wt   |
 +----------------+          +--------------------+          +-----------------+
@@ -88,7 +88,7 @@ node packages/cli/dist/wanman.mjs takeover /path/to/any/git/repo
 
 - `wanman <subcommand>` 通过 JSON-RPC 2.0 与一个 Supervisor 进程通信。
 - Supervisor 拥有 message store、context store、任务池、artifact store，并为每个 agent 派生一个子进程。
-- 每个 agent 子进程都是一个本地的 Claude Code 或 Codex 子进程，绑定在独立的 worktree 和隔离的 `$HOME` 上。
+- 每个 agent 子进程都是一个本地的 Claude Code、Codex 或 Antigravity (`agy`) 子进程，绑定在独立的 worktree 和隔离的 `$HOME` 上。
 
 深入阅读：[`docs/architecture.zh.md`](docs/architecture.zh.md)。
 
@@ -98,9 +98,12 @@ node packages/cli/dist/wanman.mjs takeover /path/to/any/git/repo
 |---------|---------|
 | `WANMAN_URL` | CLI 使用的 Supervisor HTTP 地址（默认 `http://localhost:3120`）。 |
 | `WANMAN_AGENT_NAME` | 标识当前 agent；在 agent 进程内作为默认发送者/接收者使用。 |
-| `WANMAN_RUNTIME` | `claude`（默认）或 `codex` —— 选择 per-agent CLI 适配器。 |
-| `WANMAN_MODEL`、`WANMAN_CODEX_MODEL`、`WANMAN_CODEX_REASONING_EFFORT` | 各 runtime 的模型覆盖配置。 |
+| `WANMAN_RUNTIME` | `claude`（默认）、`codex` 或 `agy`（别名：`atg`、`antigravity`）—— 选择 per-agent CLI 适配器。 |
+| `WANMAN_MODEL`、`WANMAN_CODEX_MODEL`、`WANMAN_CODEX_REASONING_EFFORT` | 通用及 Codex runtime 的模型与推理强度覆盖配置。 |
 | `WANMAN_CODEX_FAST` | 设置后让 Codex 适配器偏向低延迟的默认值。 |
+| `WANMAN_AGY_MODEL`、`WANMAN_AGY_HIGH_MODEL`、`WANMAN_AGY_STANDARD_MODEL` | Antigravity (`agy`) 适配器的模型覆盖配置（设为 `default` 时省略 `--model`）。 |
+| `WANMAN_AGY_EFFORT` | `agy` 的推理强度（`low`、`medium`、`high`、`xhigh`、`max`）。 |
+| `WANMAN_AGY_BIN` | 覆盖 `agy` 可执行文件路径（回退到 `PATH` 和 `~/.local/bin/agy`）。 |
 | `WANMAN_SKILL_SNAPSHOTS_DIR` | 覆盖 runtime 物化 skill-activation 快照的目录（默认：shared-skills 目录的同级目录，回退到 `$TMPDIR/wanman-skill-snapshots`）。 |
 
 可选的 `@sandbank.dev/db9` brain 适配器可以挂接进来以实现跨 run 的记忆 —— 见 [`docs/architecture.zh.md`](docs/architecture.zh.md#brain--persistence)。
@@ -123,9 +126,9 @@ Agent 定义集中在单个 JSON 文件中：
 
 每条 agent 条目包含：
 - `name` —— 消息总线上使用的唯一标识。
-- `lifecycle` —— `24/7`（持续重生循环）或 `on-demand`（空闲直到被触发）。
-- `model` —— 通常使用抽象 tier（`high` 或 `standard`）；runtime 适配器会映射到 Claude 或 Codex 的默认模型，也可以通过环境变量覆盖。
-- `systemPrompt` —— 内置的角色设定/使命；agent 还会自动发现 `~/.claude/skills/` 下的共享 skill 文件。
+- `lifecycle` —— `24/7`（持续重生循环）、`on-demand`（空闲直到被触发），或 `idle_cached`（空闲直到被触发，通过 `claude --resume` 或 `agy --conversation` 保留上下文；`runtime: codex` 不支持 `idle_cached`）。
+- `model` —— 通常使用抽象 tier（`high` 或 `standard`）；runtime 适配器会映射到 Claude、Codex 或 Antigravity (`agy`) 的默认模型，也可以通过环境变量覆盖。
+- `systemPrompt` —— 内置的角色设定/使命；agent 还会自动发现 `~/.claude/skills/`、`~/.codex/skills/` 和 `~/.gemini/config/skills/` 下的共享 skill 文件。
 - 可选字段 `cron`、`events`、`tools` —— 完整 schema 见架构文档。
 
 ## 测试

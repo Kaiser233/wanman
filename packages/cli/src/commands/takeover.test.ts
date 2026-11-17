@@ -556,6 +556,22 @@ describe('project intent', () => {
     expect(intent.packageScripts).toContain('build')
     expect(intent.codeRoots).toContain('src')
   })
+
+  it('collects and scores GEMINI.md and AGENTS.md project instruction files alongside CLAUDE.md', () => {
+    touch('README.md', '# App\n\nOverview.')
+    touch('CLAUDE.md', '# Claude Rules')
+    touch('GEMINI.md', '# Gemini Rules')
+    touch('AGENTS.md', '# Agent Rules')
+
+    const docs = collectProjectDocs(tmpDir)
+    const byPath = new Map(docs.map(doc => [doc.path, doc]))
+
+    expect(byPath.get('CLAUDE.md')?.score).toBe(85)
+    expect(byPath.get('GEMINI.md')?.score).toBe(85)
+    expect(byPath.get('AGENTS.md')?.score).toBe(85)
+    expect(byPath.get('GEMINI.md')?.kind).toBe('notes')
+    expect(byPath.get('AGENTS.md')?.kind).toBe('notes')
+  })
 })
 
 describe('materializeTakeoverProject', () => {
@@ -791,5 +807,34 @@ describe('takeoverCommand', () => {
     expect(config.agents.map(agent => agent.model)).toContain('standard')
     expect(readFileSync(join(tmpDir, '.wanman', 'agents', 'ceo', 'AGENT.md'), 'utf-8')).toContain('wanman task list')
     expect(logs.join('\n')).toContain('Dry run complete')
+  })
+
+  it('normalizes agy runtime aliases in takeoverCommand dry-run', async () => {
+    execSync('git init', { cwd: tmpDir, stdio: 'ignore' })
+    execSync('git config user.email test@example.com', { cwd: tmpDir, stdio: 'ignore' })
+    execSync('git config user.name Test', { cwd: tmpDir, stdio: 'ignore' })
+    touch('README.md', '# Agy App\n\nRuns on Antigravity.')
+    touch('package.json', JSON.stringify({ scripts: { test: 'vitest' } }))
+    execSync('git add README.md package.json', { cwd: tmpDir, stdio: 'ignore' })
+    execSync('git commit -m init', { cwd: tmpDir, stdio: 'ignore' })
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    try {
+      await takeoverCommand([
+        tmpDir,
+        '--runtime', 'atg',
+        '--agy-model', 'gemini-3.8-flash-low',
+        '--agy-effort', 'max',
+        '--dry-run',
+        '--no-brain',
+      ])
+    } finally {
+      logSpy.mockRestore()
+    }
+
+    const config = JSON.parse(readFileSync(join(tmpDir, '.wanman', 'agents.json'), 'utf-8')) as {
+      agents: Array<{ runtime: string }>
+    }
+    expect(new Set(config.agents.map(agent => agent.runtime))).toEqual(new Set(['agy']))
   })
 })

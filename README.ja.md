@@ -2,9 +2,9 @@
 
 [English](README.md) | [中文](README.zh.md) | **日本語**
 
-Agent Matrix フレームワーク — 監督下の Claude Code あるいは Codex エージェントのネットワークを起動し、あなたのマシン上で協調動作させます。
+Agent Matrix フレームワーク — 監督下の Claude Code、Codex、または Antigravity (`agy`) エージェントのネットワークを起動し、あなたのマシン上で協調動作させます。
 
-wanman はオープンソースのローカルモード Agent Matrix フレームワークです。監督下の Claude Code あるいは Codex エージェントのネットワークをあなたのマシン上で動かし、JSON-RPC スーパーバイザーを介して協調動作させます。
+wanman はオープンソースのローカルモード Agent Matrix フレームワークです。監督下の Claude Code、Codex、または Antigravity (`agy`) エージェントのネットワークをあなたのマシン上で動かし、JSON-RPC スーパーバイザーを介して協調動作させます。
 
 ## wanman について
 
@@ -15,7 +15,7 @@ wanman という名前は、日本語の [ワンマン電車 / one-man train](ht
 ## 何をするか
 
 - 複数のエージェント（CEO、dev、devops、marketing、feedback など）を、steer/follow-up 優先度付きの非同期メッセージバスで連携させます。
-- 各エージェントを実際の Claude Code または Codex CLI サブプロセスとして実行します。CLI 認証はあなた自身のものを利用し、wanman は spawn、プロンプト送出、ライフサイクルを統括します。
+- 各エージェントを実際の Claude Code、Codex、または Antigravity (`agy`) CLI サブプロセスとして実行します。CLI 認証はあなた自身のものを利用し、wanman は spawn、プロンプト送出、ライフサイクルを統括します。
 - すべてのエージェントをエージェントごとのワークツリーとエージェントごとの `$HOME` で隔離するため、エージェントがあなたの汚れた作業コピーやシェルプロファイルを変更することはありません。
 - CLI ファーストです。すべてが `wanman` コマンドと JSON-RPC スーパーバイザー経由でスクリプト化可能、観測可能、再現可能です。
 
@@ -28,7 +28,7 @@ wanman という名前は、日本語の [ワンマン電車 / one-man train](ht
 ## Quickstart
 
 ```bash
-# 前提条件: Node 20+, pnpm 9+, git, ログイン済みの Claude Code または Codex CLI。
+# 前提条件: Node 20+, pnpm 9+, git, 認証済みの Claude Code、Codex、または Antigravity (agy) CLI。
 git clone git@github.com:chekusu/wanman.git wanman.dev
 cd wanman.dev
 pnpm install
@@ -75,7 +75,7 @@ node packages/cli/dist/wanman.mjs takeover /path/to/any/git/repo
 ```
 +----------------+          +--------------------+          +-----------------+
 |  wanman CLI    |  JSON    |  Supervisor        |  spawn   |  Agent process  |
-|  (host shell)  | ---RPC-->|  (local process)   | -------> |  (Claude/Codex) |
+|  (host shell)  | ---RPC-->|  (local process)   | -------> | (Claude/Codex/Agy)|
 |                |  /rpc    |  message/context/  |          |  per-agent $HOME|
 |                |          |  task/artifact     |          |  per-agent wt   |
 +----------------+          +--------------------+          +-----------------+
@@ -88,7 +88,7 @@ node packages/cli/dist/wanman.mjs takeover /path/to/any/git/repo
 
 - `wanman <subcommand>` は Supervisor プロセスに対して JSON-RPC 2.0 で通信します。
 - Supervisor は message store、context store、task pool、artifact store を保有し、エージェントごとに 1 つの子プロセスを spawn します。
-- 各エージェントの子プロセスはローカルの Claude Code または Codex サブプロセスで、エージェントごとのワークツリーと隔離された `$HOME` に紐付いています。
+- 各エージェントの子プロセスはローカルの Claude Code、Codex、または Antigravity (`agy`) サブプロセスで、エージェントごとのワークツリーと隔離された `$HOME` に紐付いています。
 
 詳細: [`docs/architecture.ja.md`](docs/architecture.ja.md)。
 
@@ -98,9 +98,12 @@ node packages/cli/dist/wanman.mjs takeover /path/to/any/git/repo
 |---------|---------|
 | `WANMAN_URL` | CLI 向けの Supervisor HTTP URL（デフォルト `http://localhost:3120`）。 |
 | `WANMAN_AGENT_NAME` | 現在のエージェントを識別します。エージェントプロセス内で既定の送信者/受信者として使われます。 |
-| `WANMAN_RUNTIME` | `claude`（デフォルト）または `codex` — エージェントごとの CLI アダプタを選択します。 |
-| `WANMAN_MODEL`, `WANMAN_CODEX_MODEL`, `WANMAN_CODEX_REASONING_EFFORT` | runtime ごとのモデル上書き設定です。 |
+| `WANMAN_RUNTIME` | `claude`（デフォルト）、`codex`、または `agy`（エイリアス: `atg`、`antigravity`）— エージェントごとの CLI アダプタを選択します。 |
+| `WANMAN_MODEL`, `WANMAN_CODEX_MODEL`, `WANMAN_CODEX_REASONING_EFFORT` | 共通および Codex runtime のモデル・推論強度の上書き設定です。 |
 | `WANMAN_CODEX_FAST` | 設定すると Codex アダプタを低レイテンシ寄りのデフォルトに傾けます。 |
+| `WANMAN_AGY_MODEL`, `WANMAN_AGY_HIGH_MODEL`, `WANMAN_AGY_STANDARD_MODEL` | Antigravity (`agy`) アダプタのモデル上書き設定です（`default` 指定で `--model` を省略）。 |
+| `WANMAN_AGY_EFFORT` | `agy` の推論強度（`low`、`medium`、`high`、`xhigh`、`max`）。 |
+| `WANMAN_AGY_BIN` | `agy` バイナリパスを上書きします（既定は `PATH` および `~/.local/bin/agy`）。 |
 | `WANMAN_SKILL_SNAPSHOTS_DIR` | runtime が skill 有効化スナップショットを展開する場所を上書きします（デフォルトは shared-skills ディレクトリの兄弟、フォールバックは `$TMPDIR/wanman-skill-snapshots`）。 |
 
 クロスラン記憶のために、オプションで `@sandbank.dev/db9` brain アダプタを接続できます — [`docs/architecture.ja.md`](docs/architecture.ja.md#brain--persistence) を参照してください。
@@ -123,9 +126,9 @@ node packages/cli/dist/wanman.mjs takeover /path/to/any/git/repo
 
 エージェントエントリごとに以下のフィールドがあります:
 - `name` — メッセージバス上で使われる一意識別子です。
-- `lifecycle` — `24/7`（連続再生成ループ）または `on-demand`（トリガーがあるまでアイドル）。
-- `model` — 通常は抽象 tier（`high` または `standard`）を使います。runtime アダプタが Claude または Codex のデフォルトモデルに解決し、環境変数で上書きできます。
-- `systemPrompt` — 組み込みのペルソナ/ミッションです。エージェントは `~/.claude/skills/` にある共有 skill ファイルも自動検出します。
+- `lifecycle` — `24/7`（連続再生成ループ）、`on-demand`（トリガーがあるまでアイドル）、または `idle_cached`（トリガーがあるまでアイドルし、`claude --resume` や `agy --conversation` でコンテキストを引き継ぐ。`runtime: codex` では不可）。
+- `model` — 通常は抽象 tier（`high` または `standard`）を使います。runtime アダプタが Claude、Codex、または Antigravity (`agy`) のデフォルトモデルに解決し、環境変数で上書きできます。
+- `systemPrompt` — 組み込みのペルソナ/ミッションです。エージェントは `~/.claude/skills/`、`~/.codex/skills/`、`~/.gemini/config/skills/` にある共有 skill ファイルも自動検出します。
 - オプションの `cron`、`events`、`tools` フィールド — 完全なスキーマは architecture ドキュメントを参照してください。
 
 ## Testing

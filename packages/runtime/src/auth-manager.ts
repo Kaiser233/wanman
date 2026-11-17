@@ -5,7 +5,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { spawn, type ChildProcess } from 'child_process';
+import { execFileSync, spawn, type ChildProcess } from 'child_process';
 import type { AuthProviderName, AuthProviderInfo, AuthStatus } from '@wanman/core';
 import { createLogger } from './logger.js';
 
@@ -79,7 +79,54 @@ function checkCodexAuth(): boolean {
   return false;
 }
 
-export const SUPPORTED_AUTH_PROVIDERS = ['claude', 'codex', 'github'] as const satisfies readonly AuthProviderName[];
+/** Read Antigravity CLI modelProvider from settings.json without exposing secrets. */
+function readAgyModelProvider(): string | undefined {
+  const home = process.env['HOME'] || '/root';
+  const settingsFile = path.join(home, '.gemini', 'antigravity-cli', 'settings.json');
+  try {
+    if (fs.existsSync(settingsFile)) {
+      const raw = fs.readFileSync(settingsFile, 'utf-8');
+      const parsed = JSON.parse(raw) as { modelProvider?: unknown };
+      return typeof parsed.modelProvider === 'string' ? parsed.modelProvider : undefined;
+    }
+  } catch { /* ignore */ }
+  return undefined;
+}
+
+/**
+ * Check if Antigravity CLI (`agy`) has valid headless or keyring auth.
+ *
+ * Uses fast, read-only, non-hanging checks only (never spawns `agy -p`).
+ */
+function checkAgyAuth(): boolean {
+  if (process.env['AGY_ADC_AUTH'] === 'true') return true;
+
+  if (process.env['GEMINI_API_KEY'] && readAgyModelProvider() === 'gemini') {
+    return true;
+  }
+
+  if (process.platform === 'darwin') {
+    const queries = [
+      ['find-generic-password', '-s', 'gemini', '-a', 'antigravity'],
+      ['find-generic-password', '-s', 'Antigravity CLI'],
+    ];
+    for (const args of queries) {
+      try {
+        execFileSync('security', args, {
+          stdio: 'ignore',
+          timeout: AUTH_CHECK_TIMEOUT_MS,
+        });
+        return true;
+      } catch {
+        // Try next Keychain identifier
+      }
+    }
+  }
+
+  return false;
+}
+
+export const SUPPORTED_AUTH_PROVIDERS = ['claude', 'codex', 'github', 'agy'] as const satisfies readonly AuthProviderName[];
 
 export function isAuthProviderName(value: unknown): value is AuthProviderName {
   return typeof value === 'string' && (SUPPORTED_AUTH_PROVIDERS as readonly string[]).includes(value);
@@ -104,6 +151,10 @@ const PROVIDER_CONFIGS: Record<AuthProviderName, ProviderConfig> = {
     loginCmd: ['codex', 'login', '--device-auth'],
     codeRegex: /([A-Z0-9]{4}-[A-Z0-9]{4,5})/,
     urlRegex: /https:\/\/auth\.openai\.com\/\S+/,
+  },
+  agy: {
+    checkCmd: ['agy', '--version'],
+    customCheck: checkAgyAuth,
   },
 };
 

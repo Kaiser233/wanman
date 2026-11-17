@@ -11,10 +11,12 @@
  *   respawn with the steer message prepended (safest approach per design doc)
  */
 
-import type { AgentDefinition, AgentState } from '@wanman/core';
+import type { AgentDefinition, AgentRuntime, AgentState } from '@wanman/core';
 import {
   type AgentRunEvent,
   createAgentAdapter,
+  normalizeAgentRuntime,
+  type ReasoningEffort,
   resolveAgentRuntime,
   resolveModel,
   type AgentRunHandle,
@@ -71,21 +73,36 @@ export function buildGoalPrompt(agentName: string, goal?: string): string | unde
   return `## Current Goal\n\nYour core objective is: ${goal}\n\n${taskInstruction}${langInstruction}`
 }
 
-function resolveCodexReasoningEffort(extraEnv: Record<string, string>, runtime: 'claude' | 'codex'): 'low' | 'medium' | 'high' | 'xhigh' | undefined {
-  if (runtime !== 'codex') return undefined;
-  const raw = extraEnv['WANMAN_CODEX_REASONING_EFFORT'] ?? process.env['WANMAN_CODEX_REASONING_EFFORT'];
-  switch (raw?.trim().toLowerCase()) {
-    case 'low':
-    case 'medium':
-    case 'high':
-    case 'xhigh':
-      return raw.trim().toLowerCase() as 'low' | 'medium' | 'high' | 'xhigh';
-    default:
-      return undefined;
+function resolveReasoningEffort(extraEnv: Record<string, string>, runtime: AgentRuntime): ReasoningEffort | undefined {
+  if (runtime === 'codex') {
+    const raw = extraEnv['WANMAN_CODEX_REASONING_EFFORT'] ?? process.env['WANMAN_CODEX_REASONING_EFFORT'];
+    switch (raw?.trim().toLowerCase()) {
+      case 'low':
+      case 'medium':
+      case 'high':
+      case 'xhigh':
+        return raw.trim().toLowerCase() as ReasoningEffort;
+      default:
+        return undefined;
+    }
   }
+  if (runtime === 'agy') {
+    const raw = extraEnv['WANMAN_AGY_EFFORT'] ?? process.env['WANMAN_AGY_EFFORT'];
+    switch (raw?.trim().toLowerCase()) {
+      case 'low':
+      case 'medium':
+      case 'high':
+      case 'xhigh':
+      case 'max':
+        return raw.trim().toLowerCase() as ReasoningEffort;
+      default:
+        return undefined;
+    }
+  }
+  return undefined;
 }
 
-function resolveCodexFast(extraEnv: Record<string, string>, runtime: 'claude' | 'codex'): boolean {
+function resolveCodexFast(extraEnv: Record<string, string>, runtime: AgentRuntime): boolean {
   if (runtime !== 'codex') return false;
   const raw = (extraEnv['WANMAN_CODEX_FAST'] ?? process.env['WANMAN_CODEX_FAST'] ?? '').trim().toLowerCase();
   return raw === '1' || raw === 'true' || raw === 'on' || raw === 'yes';
@@ -146,11 +163,11 @@ export class AgentProcess {
     hasAutonomousWork?: AutonomousWorkChecker,
     envProvider?: EnvironmentProvider,
   ) {
-    // `idle_cached` is Claude-only: the resume mechanism relies on capturing
-    // Claude's `system/init` session id and passing it back as `--resume <id>`.
+    // `idle_cached` requires a runtime that can capture a session/conversation id
+    // and resume it on the next trigger (`claude --resume` or `agy --conversation`).
     // Codex has no equivalent in this runtime today, so pairing `idle_cached`
-    // with a non-Claude runtime would silently degrade to `on-demand`
-    // semantics (no preserved context).
+    // with Codex would silently degrade to `on-demand` semantics (no preserved
+    // context).
     //
     // Reject at construction using the *effective* runtime (i.e. honoring the
     // `WANMAN_RUNTIME` env override, not just the declared `agent.runtime`)
@@ -159,16 +176,16 @@ export class AgentProcess {
     // after wondering why context is being lost across triggers.
     if (definition.lifecycle === 'idle_cached') {
       const effectiveRuntime = resolveAgentRuntime(definition);
-      if (effectiveRuntime !== 'claude') {
+      if (effectiveRuntime !== 'claude' && effectiveRuntime !== 'agy') {
         const declared = definition.runtime ?? '(default)';
-        const overridden = process.env['WANMAN_RUNTIME'] && process.env['WANMAN_RUNTIME'] !== definition.runtime
+        const overridden = process.env['WANMAN_RUNTIME'] && normalizeAgentRuntime(process.env['WANMAN_RUNTIME']) !== normalizeAgentRuntime(definition.runtime)
           ? ` (forced by WANMAN_RUNTIME=${process.env['WANMAN_RUNTIME']})`
           : '';
         throw new Error(
           `Agent "${definition.name}" has lifecycle "idle_cached" but the effective runtime is "${effectiveRuntime}"${overridden}. `
-          + `idle_cached only works with the Claude runtime — it relies on \`claude --resume\` to restore conversation context across triggers, `
+          + `idle_cached only works with the Claude runtime (or Agy via \`agy --conversation\`) — it relies on \`claude --resume\` or \`agy --conversation\` to restore conversation context across triggers, `
           + `which Codex has no equivalent for in this runtime. `
-          + `Either keep the runtime as "claude" (declared: "${declared}") or change the lifecycle to "on-demand".`
+          + `Either keep the runtime as "claude" or "agy" (declared: "${declared}") or change the lifecycle to "on-demand".`
         );
       }
     }
@@ -273,7 +290,7 @@ export class AgentProcess {
           ? await resolveMaybePromise(this.envProvider(this.definition.name))
           : {};
         const runEnv = { ...this.extraEnv, ...dynamicEnv };
-        const reasoningEffort = resolveCodexReasoningEffort(runEnv, runtime);
+        const reasoningEffort = resolveReasoningEffort(runEnv, runtime);
         const fast = resolveCodexFast(runEnv, runtime);
         log.info('spawning agent', {
           agent: this.definition.name,
@@ -421,12 +438,11 @@ export class AgentProcess {
       ? await resolveMaybePromise(this.envProvider(this.definition.name))
       : {};
     const runEnv = { ...this.extraEnv, ...dynamicEnv };
-    const reasoningEffort = resolveCodexReasoningEffort(runEnv, runtime);
+    const reasoningEffort = resolveReasoningEffort(runEnv, runtime);
     const fast = resolveCodexFast(runEnv, runtime);
-    // `idle_cached` agents always pass the captured Claude session id (if
-    // any) — the constructor already rejected the lifecycle paired with a
-    // non-Claude effective runtime, so we can rely on `runtime === 'claude'`
-    // here without re-checking.
+    // `idle_cached` agents pass the captured session/conversation id (if
+    // any) — the constructor rejects unsupported runtimes, so only Claude and
+    // Agy reach this path.
     const resumeSessionId = this.definition.lifecycle === 'idle_cached'
       ? this.lastSessionId ?? undefined
       : undefined;
@@ -603,9 +619,9 @@ export class AgentProcess {
    * retry path so they apply the same time-budget and lifecycle rules.
    */
   private async runOneShot(opts: {
-    runtime: 'claude' | 'codex';
+    runtime: AgentRuntime;
     model: string;
-    reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh' | undefined;
+    reasoningEffort: ReasoningEffort | undefined;
     fast: boolean;
     prompt: string;
     runEnv: Record<string, string>;

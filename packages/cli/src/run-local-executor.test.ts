@@ -99,4 +99,27 @@ describe('runLocalExecution', () => {
     expect(params.downloadRepoPatch).toHaveBeenCalled()
     process.exitCode = previousExitCode
   })
+
+  it('forwards agy runtime options to local supervisor session', async () => {
+    const params = makeParams()
+    params.runtime = {
+      runtime: 'agy',
+      agyModel: 'gemini-3.8-flash-low',
+      agyEffort: 'max',
+    }
+    runLocalSupervisorSessionMock.mockImplementationOnce(async (session: RunLocalSupervisorSessionParams) => {
+      const context = { runtime: { listTasks: vi.fn() }, port: 3120 }
+      await session.run(context as never)
+    })
+
+    await runLocalExecution(params)
+
+    expect(runLocalSupervisorSessionMock).toHaveBeenCalledWith(expect.objectContaining({
+      supervisor: expect.objectContaining({
+        runtime: 'agy',
+        agyModel: 'gemini-3.8-flash-low',
+        agyEffort: 'max',
+      }),
+    }))
+  })
 })

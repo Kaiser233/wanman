@@ -47,6 +47,7 @@ beforeEach(() => {
     'WANMAN_MODEL',
     'WANMAN_RUNTIME',
     'WANMAN_CODEX_MODEL',
+    'WANMAN_AGY_MODEL',
     'WANMAN_SHARED_SKILLS',
     'HOME',
   );
@@ -147,6 +148,33 @@ describe('loadConfig', () => {
 
     const config = loadConfig();
     expect(config.agents.every(agent => agent.runtime === 'codex')).toBe(true);
+  });
+
+  it('overrides agent runtime from WANMAN_RUNTIME env var including agy aliases', () => {
+    const configPath = path.join(tmpDir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify(sampleConfig));
+    process.env['WANMAN_CONFIG'] = configPath;
+    process.env['WANMAN_RUNTIME'] = 'atg';
+
+    const config = loadConfig();
+    expect(config.agents.every(agent => agent.runtime === 'agy')).toBe(true);
+  });
+
+  it('overrides only agy agent models from WANMAN_AGY_MODEL', () => {
+    const configPath = path.join(tmpDir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+      ...sampleConfig,
+      agents: [
+        { name: 'ceo', lifecycle: '24/7', runtime: 'claude', model: 'claude-opus-4-6', systemPrompt: 'You are CEO' },
+        { name: 'dev', lifecycle: 'on-demand', runtime: 'agy', model: 'high', systemPrompt: 'You are Dev' },
+      ],
+    }));
+    process.env['WANMAN_CONFIG'] = configPath;
+    process.env['WANMAN_AGY_MODEL'] = 'gemini-3.8-flash-low';
+
+    const config = loadConfig();
+    expect(config.agents.find(agent => agent.name === 'ceo')?.model).toBe('claude-opus-4-6');
+    expect(config.agents.find(agent => agent.name === 'dev')?.model).toBe('gemini-3.8-flash-low');
   });
 
   it('overrides only codex agent models from WANMAN_CODEX_MODEL', () => {

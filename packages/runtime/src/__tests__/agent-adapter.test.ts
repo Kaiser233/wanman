@@ -28,6 +28,9 @@ afterEach(() => {
   delete process.env['WANMAN_CODEX_MODEL'];
   delete process.env['WANMAN_CODEX_HIGH_MODEL'];
   delete process.env['WANMAN_CODEX_STANDARD_MODEL'];
+  delete process.env['WANMAN_AGY_MODEL'];
+  delete process.env['WANMAN_AGY_HIGH_MODEL'];
+  delete process.env['WANMAN_AGY_STANDARD_MODEL'];
 });
 
 describe('agent-adapter', () => {
@@ -48,12 +51,23 @@ describe('agent-adapter', () => {
     expect(normalizeAgentRuntime('gemini')).toBe('claude');
   });
 
+  it('normalizes agy and its aliases to agy', () => {
+    expect(normalizeAgentRuntime('agy')).toBe('agy');
+    expect(normalizeAgentRuntime('atg')).toBe('agy');
+    expect(normalizeAgentRuntime('antigravity')).toBe('agy');
+    expect(normalizeAgentRuntime('  ATG ')).toBe('agy');
+  });
+
   it('creates a codex adapter', () => {
     expect(createAgentAdapter('codex').runtime).toBe('codex');
   });
 
   it('creates a claude adapter', () => {
     expect(createAgentAdapter('claude').runtime).toBe('claude');
+  });
+
+  it('creates an agy adapter', () => {
+    expect(createAgentAdapter('agy').runtime).toBe('agy');
   });
 
   it('resolves abstract tiers to claude defaults', () => {
@@ -64,6 +78,24 @@ describe('agent-adapter', () => {
   it('resolves abstract tiers to codex defaults', () => {
     expect(resolveModel('high', 'codex')).toBe('gpt-5.4');
     expect(resolveModel('standard', 'codex')).toBe('gpt-5.4');
+  });
+
+  it('resolves abstract tiers and claude aliases to agy defaults', () => {
+    expect(resolveModel('high', 'agy')).toBe('gemini-4-hydrogen-high');
+    expect(resolveModel('standard', 'agy')).toBe('gemini-4-carbon-medium');
+    expect(resolveModel('claude-opus-4-6', 'agy')).toBe('gemini-4-hydrogen-high');
+    expect(resolveModel('haiku', 'agy')).toBe('gemini-4-carbon-medium');
+    expect(resolveModel('default', 'agy')).toBe('default');
+  });
+
+  it('supports agy model env overrides including default passthrough', () => {
+    process.env['WANMAN_AGY_HIGH_MODEL'] = 'gemini-4-hydrogen-xhigh';
+    process.env['WANMAN_AGY_MODEL'] = 'gemini-3.8-flash-low';
+
+    expect(resolveModel('high', 'agy')).toBe('gemini-4-hydrogen-xhigh');
+    expect(resolveModel('standard', 'agy')).toBe('gemini-3.8-flash-low');
+    expect(resolveModel('default', 'agy')).toBe('gemini-3.8-flash-low');
+    expect(resolveModel('gemini-4-argon-low', 'agy')).toBe('gemini-4-argon-low');
   });
 
   it('maps known claude aliases to runtime tiers', () => {

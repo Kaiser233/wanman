@@ -220,6 +220,24 @@ describe('default local run config', () => {
     expect(dev.baseUrl).toBe('http://127.0.0.1:1234')
   })
 
+  it('honors agy runtime in the built-in local config', () => {
+    const config = JSON.parse(createDefaultLocalRunConfigText({
+      loops: 1,
+      pollInterval: 1,
+      output: './deliverables',
+      keep: false,
+      noBrain: true,
+      infinite: false,
+      errorLimit: 20,
+      workerKey: 'lmstudio',
+      runtime: 'agy',
+      agyModel: 'gemini-3.8-flash-low',
+      agyEffort: 'high',
+    })) as { agents: Array<{ name: string; runtime?: string }> }
+
+    expect(config.agents.every(agent => agent.runtime === 'agy')).toBe(true)
+  })
+
   it('uses the built-in local config name and text by default', () => {
     const opts = {
       loops: 1,

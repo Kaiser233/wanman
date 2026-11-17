@@ -8,9 +8,10 @@
 
 - **Node.js 20+** 和 **pnpm 9+**（`corepack enable && corepack prepare pnpm@9.15.0 --activate`）。
 - **git**。
-- 已认证的 Claude Code CLI *或* Codex CLI —— wanman 会把它们当成 agent 子进程来派生，并直接复用它们已有的认证。
+- 已认证的 Claude Code、Codex *或* Antigravity (`agy`) CLI —— wanman 会把它们当成 agent 子进程来派生，并直接复用宿主机已有的认证。
   - Claude Code：全局安装 `@anthropic-ai/claude-code` 并运行登录流程（执行 `claude` 然后按提示操作）。
   - Codex：全局安装 `@openai/codex`，按 Codex CLI 文档完成登录。
+  - Antigravity (`agy`)：安装 `agy`（位于 `PATH`、`~/.local/bin/agy`，或通过 `WANMAN_AGY_BIN` 指定）并完成认证：在宿主机交互登录（写入 macOS 钥匙串凭证，如 service `gemini` / account `antigravity`）、设置 `AGY_ADC_AUTH=true`，或在 `~/.gemini/antigravity-cli/settings.json` 中配置 `"modelProvider": "gemini"` 并设置 `GEMINI_API_KEY`。
 - **任意现有的 git 仓库**，你愿意让 agent 在里面读取和涂写。wanman 会把它复制到一个隔离的 worktree，从不会修改你未提交的工作区。
 
 可选：
@@ -51,11 +52,13 @@ wanman takeover .
 4. 它在一个隔离的 `.wanman/home/` 下派生 agent（默认是 Claude Code 子进程），让 shell 配置文件的改动不会污染你真实的 `$HOME`。
 5. takeover 会保持前台运行，实时流式输出 agent 活动。
 
-用 `--runtime` 选择 runtime：
+用 `--runtime` 选择 runtime（以及可选的模型 / 推理强度参数）：
 
 ```bash
 wanman takeover . --runtime claude   # default
 wanman takeover . --runtime codex
+wanman takeover . --runtime agy      # 别名：atg, antigravity
+wanman takeover . --runtime agy --agy-model gemini-3.8-flash-low --agy-effort high
 ```
 
 ## 4. 与 matrix 对话

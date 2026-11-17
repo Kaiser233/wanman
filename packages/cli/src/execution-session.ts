@@ -2,7 +2,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { execSync } from 'node:child_process'
 import type { AgentDefinition, AgentMatrixConfig, AgentRuntime } from '@wanman/core'
-import type { ProjectRunSpec as BaseProjectRunSpec, RunOptions } from '@wanman/host-sdk'
+import { normalizeRuntime, type ProjectRunSpec as BaseProjectRunSpec, type RunOptions } from '@wanman/host-sdk'
 import { Heartbeat, LoopEventBus, LoopLogger } from './loop-observability.js'
 import {
   type HealthAgent,
@@ -198,10 +198,6 @@ const DEFAULT_RUN_CLI_INSTRUCTIONS = [
   'Keep outputs under your workspace output directory and keep task updates concrete.',
 ].join('\n')
 
-function normalizeDefaultRuntime(runtime?: AgentRuntime): AgentRuntime {
-  return runtime === 'codex' ? 'codex' : 'claude'
-}
-
 function withWorkerEndpoint(agent: AgentDefinition, opts: RunOptions): AgentDefinition {
   if (!opts.workerUrl || agent.name === 'ceo') return agent
   return {
@@ -220,7 +216,7 @@ function defaultAgent(
   tier: 'high' | 'standard',
   role: string,
 ): AgentDefinition {
-  const runtime = opts.runtime ? normalizeDefaultRuntime(opts.runtime) : undefined
+  const runtime = opts.runtime ? normalizeRuntime(opts.runtime) : undefined
   const agent: AgentDefinition = {
     name,
     lifecycle,
@@ -815,6 +811,7 @@ export async function runExecutionSession(
     runId,
     runtimeOverride,
     codexConfigLabel,
+    agyConfigLabel,
     runtimeLabel,
     llmModeLabel,
   } = sessionPlan
@@ -831,7 +828,7 @@ export async function runExecutionSession(
   │  Brain:  ${(brainName ?? 'disabled').padEnd(40)}│
   │  Runtime:${runtimeLabel.padEnd(40)}│
   │  LLM:    ${llmModeLabel.padEnd(40)}│
-${codexConfigLabel ? `  │  Codex:  ${codexConfigLabel.padEnd(40)}│\n` : ''}  └─────────────────────────────────────────────────┘
+${codexConfigLabel ? `  │  Codex:  ${codexConfigLabel.padEnd(40)}│\n` : ''}${agyConfigLabel ? `  │  Agy:    ${agyConfigLabel.padEnd(40)}│\n` : ''}  └─────────────────────────────────────────────────┘
 `)
 
   if (root) {
@@ -858,9 +855,11 @@ ${codexConfigLabel ? `  │  Codex:  ${codexConfigLabel.padEnd(40)}│\n` : ''} 
     runId,
     localLayout,
     runtime: {
-      runtime: runtimeOverride === 'codex' ? 'codex' : runtimeOverride === 'claude' ? 'claude' : undefined,
+      runtime: runtimeOverride,
       codexModel: opts.codexModel,
       codexReasoningEffort: opts.codexReasoningEffort,
+      ...(opts.agyModel ? { agyModel: opts.agyModel } : {}),
+      ...(opts.agyEffort ? { agyEffort: opts.agyEffort } : {}),
     },
     brainName,
     hooks,

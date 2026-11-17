@@ -273,4 +273,45 @@ describe('runExecutionSession', () => {
     expect(result.finalLoop).toBe(15)
     expect(runtime.sendMessage).not.toHaveBeenCalled()
   })
+
+  it('forwards agy runtime options into runLocalExecution', async () => {
+    const output = makeTmpDir()
+    let capturedParams: LocalRunExecutorParams | undefined
+
+    runLocalExecutionMock.mockImplementationOnce(async (params: LocalRunExecutorParams) => {
+      capturedParams = params
+    })
+
+    await runExecutionSession('Build with agy', {
+      loops: 1,
+      pollInterval: 0,
+      output,
+      keep: false,
+      noBrain: true,
+      infinite: false,
+      errorLimit: 3,
+      runtime: 'agy',
+      agyModel: 'gemini-3.8-flash-low',
+      agyEffort: 'max',
+    }, {
+      sourceLabel: 'test',
+    }, {
+      hostEnv: {
+        PATH: process.env['PATH'],
+        WANMAN_RUNTIME: 'claude',
+      },
+    })
+
+    expect(capturedParams?.runtime).toEqual({
+      runtime: 'agy',
+      codexModel: undefined,
+      codexReasoningEffort: undefined,
+      agyModel: 'gemini-3.8-flash-low',
+      agyEffort: 'max',
+    })
+    const config = JSON.parse(fs.readFileSync(capturedParams!.localLayout.configPath, 'utf-8')) as {
+      agents: Array<{ runtime?: string }>
+    }
+    expect(config.agents.every(agent => agent.runtime === 'agy')).toBe(true)
+  })
 })

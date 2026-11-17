@@ -3,10 +3,14 @@ import type { ChildProcess } from 'node:child_process'
 import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const spawnMock = vi.hoisted(() => vi.fn())
+const { spawnMock, execFileSyncMock } = vi.hoisted(() => ({
+  spawnMock: vi.fn(),
+  execFileSyncMock: vi.fn(),
+}))
 
 vi.mock('child_process', () => ({
   spawn: spawnMock,
+  execFileSync: execFileSyncMock,
 }))
 
 vi.mock('../logger.js', () => ({
@@ -132,5 +136,42 @@ describe('AuthManager spawn-backed flows', () => {
       status: 'error',
       error: 'Login process exited with code 2',
     })
+  })
+
+  it('checks agy Keychain auth without reading secret values on darwin', async () => {
+    const originalPlatform = process.platform
+    const beforeKey = process.env['GEMINI_API_KEY']
+    const beforeAdc = process.env['AGY_ADC_AUTH']
+    delete process.env['GEMINI_API_KEY']
+    delete process.env['AGY_ADC_AUTH']
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+
+    try {
+      const manager = new AuthManager()
+      execFileSyncMock.mockReturnValueOnce(Buffer.from(''))
+      await expect(manager.checkAuth('agy')).resolves.toBe(true)
+      expect(execFileSyncMock).toHaveBeenCalledWith(
+        'security',
+        ['find-generic-password', '-s', 'gemini', '-a', 'antigravity'],
+        expect.objectContaining({ stdio: 'ignore' }),
+      )
+
+      execFileSyncMock
+        .mockImplementationOnce(() => { throw new Error('not found') })
+        .mockReturnValueOnce(Buffer.from(''))
+      await expect(manager.checkAuth('agy')).resolves.toBe(true)
+      expect(execFileSyncMock).toHaveBeenLastCalledWith(
+        'security',
+        ['find-generic-password', '-s', 'Antigravity CLI'],
+        expect.objectContaining({ stdio: 'ignore' }),
+      )
+
+      execFileSyncMock.mockImplementation(() => { throw new Error('not found') })
+      await expect(manager.checkAuth('agy')).resolves.toBe(false)
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform })
+      if (beforeKey !== undefined) process.env['GEMINI_API_KEY'] = beforeKey
+      if (beforeAdc !== undefined) process.env['AGY_ADC_AUTH'] = beforeAdc
+    }
   })
 })

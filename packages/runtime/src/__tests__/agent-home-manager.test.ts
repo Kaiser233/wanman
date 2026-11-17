@@ -28,7 +28,16 @@ describe('AgentHomeManager', () => {
 
     expect(fs.readlinkSync(path.join(agentHome, '.claude', 'skills'))).toBe(snapshotPath)
     expect(fs.readlinkSync(path.join(agentHome, '.codex', 'skills'))).toBe(snapshotPath)
+    expect(fs.readlinkSync(path.join(agentHome, '.gemini', 'config', 'skills'))).toBe(snapshotPath)
     expect(fs.readlinkSync(path.join(agentHome, '.claude', '.credentials.json'))).toBe(path.join(baseHome, '.claude', '.credentials.json'))
+    expect(fs.readlinkSync(path.join(agentHome, '.gemini', 'GEMINI.md'))).toBe(path.join(baseHome, '.gemini', 'GEMINI.md'))
+    expect(fs.readlinkSync(path.join(agentHome, '.gemini', 'config', 'config.json'))).toBe(path.join(baseHome, '.gemini', 'config', 'config.json'))
+    expect(fs.readlinkSync(path.join(agentHome, '.gemini', 'antigravity-cli', 'settings.json'))).toBe(path.join(baseHome, '.gemini', 'antigravity-cli', 'settings.json'))
+    expect(fs.lstatSync(path.join(agentHome, '.gemini', 'antigravity-cli')).isSymbolicLink()).toBe(false)
+    expect(fs.existsSync(path.join(agentHome, '.gemini', 'antigravity-cli', 'cache'))).toBe(false)
+    if (process.platform === 'darwin') {
+      expect(fs.readlinkSync(path.join(agentHome, 'Library', 'Keychains'))).toBe(path.join(baseHome, 'Library', 'Keychains'))
+    }
     expect(fs.readlinkSync(path.join(agentHome, '.config'))).toBe(path.join(baseHome, '.config'))
     expect(fs.readlinkSync(path.join(agentHome, '.npmrc'))).toBe(path.join(baseHome, '.npmrc'))
     expect(fs.readlinkSync(path.join(agentHome, '.aws'))).toBe(path.join(baseHome, '.aws'))
@@ -40,9 +49,12 @@ describe('AgentHomeManager', () => {
 
     const agentHome = manager.prepareAgentHome('marketing')
     const claudeSkills = path.join(agentHome, '.claude', 'skills')
+    const geminiSkills = path.join(agentHome, '.gemini', 'config', 'skills')
 
     expect(fs.lstatSync(claudeSkills).isSymbolicLink()).toBe(true)
+    expect(fs.lstatSync(geminiSkills).isSymbolicLink()).toBe(true)
     expect(fs.readdirSync(claudeSkills)).toHaveLength(0)
+    expect(fs.readdirSync(geminiSkills)).toHaveLength(0)
   })
 
   it('cleans up all prepared homes', () => {
@@ -67,10 +79,17 @@ function createFixture(): { baseHome: string; homesRoot: string; snapshotPath: s
 
   fs.mkdirSync(path.join(baseHome, '.claude'), { recursive: true })
   fs.mkdirSync(path.join(baseHome, '.codex'), { recursive: true })
+  fs.mkdirSync(path.join(baseHome, '.gemini', 'config'), { recursive: true })
+  fs.mkdirSync(path.join(baseHome, '.gemini', 'antigravity-cli', 'cache'), { recursive: true })
+  fs.mkdirSync(path.join(baseHome, 'Library', 'Keychains'), { recursive: true })
   fs.mkdirSync(path.join(baseHome, '.config'), { recursive: true })
   fs.mkdirSync(path.join(baseHome, '.aws'), { recursive: true })
   fs.writeFileSync(path.join(baseHome, '.claude', '.credentials.json'), '{}')
   fs.writeFileSync(path.join(baseHome, '.codex', 'config.json'), '{}')
+  fs.writeFileSync(path.join(baseHome, '.gemini', 'GEMINI.md'), '# Global Rules')
+  fs.writeFileSync(path.join(baseHome, '.gemini', 'config', 'config.json'), '{}')
+  fs.writeFileSync(path.join(baseHome, '.gemini', 'antigravity-cli', 'settings.json'), '{}')
+  fs.writeFileSync(path.join(baseHome, '.gemini', 'antigravity-cli', 'cache', 'last_conversations.json'), '{}')
   fs.writeFileSync(path.join(baseHome, '.npmrc'), 'registry=https://registry.npmjs.org')
 
   fs.mkdirSync(path.join(snapshotPath, 'research'), { recursive: true })

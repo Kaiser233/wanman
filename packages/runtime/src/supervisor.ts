@@ -431,8 +431,11 @@ ${activePaths}`;
       return
     }
     try {
-      for (const runtimeDir of ['.claude', '.codex']) {
-        const skillsPath = path.join(probeHome, runtimeDir, 'skills')
+      for (const skillsPath of [
+        path.join(probeHome, '.claude', 'skills'),
+        path.join(probeHome, '.codex', 'skills'),
+        path.join(probeHome, '.gemini', 'config', 'skills'),
+      ]) {
         const stat = fs.lstatSync(skillsPath)
         if (!stat.isSymbolicLink()) {
           throw new Error(`strict skill runtime requires ${skillsPath} to be a symlink`)
@@ -759,8 +762,9 @@ ${activePaths}`;
       if (def.baseUrl) agentEnv['ANTHROPIC_BASE_URL'] = def.baseUrl;
       if (def.apiKey) agentEnv['ANTHROPIC_AUTH_TOKEN'] = def.apiKey;
       // We enrich prompts whenever the agent is not relying on the default Claude Code
-      // workflow alone. Codex needs the same explicit protocol guidance as external LLMs.
+      // workflow alone. Codex and Agy need the same explicit protocol guidance as external LLMs.
       const shouldEnrichPrompt = runtime === 'codex'
+        || runtime === 'agy'
         || !!def.baseUrl
         || !!process.env['ANTHROPIC_BASE_URL'];
       const agentDef = shouldEnrichPrompt

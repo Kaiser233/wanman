@@ -7,6 +7,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import type { AgentMatrixConfig, JsonRpcRequest, AuthProviderInfo } from '@wanman/core'
 import { RPC_METHODS, RPC_ERRORS } from '@wanman/core'
 
@@ -74,8 +77,8 @@ describe('AuthManager', () => {
     it('should return local OSS providers', async () => {
       const mgr = new AuthManager()
       const providers = await mgr.getProviders()
-      expect(providers).toHaveLength(3)
-      expect(providers.map(p => p.name).sort()).toEqual(['claude', 'codex', 'github'])
+      expect(providers).toHaveLength(4)
+      expect(providers.map(p => p.name).sort()).toEqual(['agy', 'claude', 'codex', 'github'])
     })
 
     it('should report unauthenticated for all providers in clean env', async () => {
@@ -143,9 +146,68 @@ describe('AuthManager', () => {
         else delete process.env['OPENAI_API_KEY']
       }
     })
+
+    it('should detect agy when AGY_ADC_AUTH=true is set', async () => {
+      const before = process.env['AGY_ADC_AUTH']
+      process.env['AGY_ADC_AUTH'] = 'true'
+      try {
+        const mgr = new AuthManager()
+        expect(await mgr.checkAuth('agy')).toBe(true)
+      } finally {
+        if (before) process.env['AGY_ADC_AUTH'] = before
+        else delete process.env['AGY_ADC_AUTH']
+      }
+    })
+
+    it('should report agy unauthenticated when no env auth or home keychain exists', async () => {
+      const beforeKey = process.env['GEMINI_API_KEY']
+      const beforeAdc = process.env['AGY_ADC_AUTH']
+      const beforeHome = process.env['HOME']
+      delete process.env['GEMINI_API_KEY']
+      delete process.env['AGY_ADC_AUTH']
+      process.env['HOME'] = '/tmp/nonexistent-wanman-test'
+      try {
+        const mgr = new AuthManager()
+        expect(await mgr.checkAuth('agy')).toBe(false)
+      } finally {
+        if (beforeKey) process.env['GEMINI_API_KEY'] = beforeKey
+        if (beforeAdc) process.env['AGY_ADC_AUTH'] = beforeAdc
+        process.env['HOME'] = beforeHome
+      }
+    })
+
+    it('should detect agy when GEMINI_API_KEY and gemini modelProvider are configured', async () => {
+      const beforeKey = process.env['GEMINI_API_KEY']
+      const beforeHome = process.env['HOME']
+      const beforeAdc = process.env['AGY_ADC_AUTH']
+      const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wanman-agy-auth-'))
+      const cliDir = path.join(tmpHome, '.gemini', 'antigravity-cli')
+      fs.mkdirSync(cliDir, { recursive: true })
+      fs.writeFileSync(path.join(cliDir, 'settings.json'), JSON.stringify({ modelProvider: 'gemini' }))
+      delete process.env['AGY_ADC_AUTH']
+      process.env['GEMINI_API_KEY'] = 'test-gemini-key'
+      process.env['HOME'] = tmpHome
+      try {
+        const mgr = new AuthManager()
+        expect(await mgr.checkAuth('agy')).toBe(true)
+      } finally {
+        if (beforeKey) process.env['GEMINI_API_KEY'] = beforeKey
+        else delete process.env['GEMINI_API_KEY']
+        if (beforeAdc) process.env['AGY_ADC_AUTH'] = beforeAdc
+        process.env['HOME'] = beforeHome
+        fs.rmSync(tmpHome, { recursive: true, force: true })
+      }
+    })
   })
 
   describe('startLogin', () => {
+    it('should report unsupported interactive CLI login for agy cleanly', async () => {
+      const mgr = new AuthManager()
+      const result = await mgr.startLogin('agy')
+      expect(result.name).toBe('agy')
+      expect(result.status).toBe('error')
+      expect(result.error).toMatch(/does not support CLI login/i)
+    })
     it('should return pending session for claude if already in progress', async () => {
       const mgr = new AuthManager()
       const sessions = (mgr as unknown as { sessions: Map<string, unknown> }).sessions
@@ -229,10 +291,10 @@ describe('Supervisor — auth.* RPC methods', () => {
     const res = await supervisor.handleRpcAsync(rpc(RPC_METHODS.AUTH_PROVIDERS, {}))
     expect(res.error).toBeUndefined()
     const { providers } = res.result as { providers: AuthProviderInfo[] }
-    expect(providers).toHaveLength(3)
+    expect(providers).toHaveLength(4)
 
     const names = providers.map(p => p.name).sort()
-    expect(names).toEqual(['claude', 'codex', 'github'])
+    expect(names).toEqual(['agy', 'claude', 'codex', 'github'])
 
     // Each provider should have a status
     for (const p of providers) {

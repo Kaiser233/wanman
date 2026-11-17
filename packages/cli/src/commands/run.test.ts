@@ -87,6 +87,19 @@ describe('parseOptions', () => {
   it('should parse --runtime', () => {
     const { opts } = parseOptions(['my goal', '--runtime', 'codex'])
     expect(opts.runtime).toBe('codex')
+    expect(parseOptions(['my goal', '--runtime', 'agy']).opts.runtime).toBe('agy')
+    expect(parseOptions(['my goal', '--runtime', 'atg']).opts.runtime).toBe('agy')
+    expect(parseOptions(['my goal', '--runtime', 'antigravity']).opts.runtime).toBe('agy')
+    expect(parseOptions(['my goal', '--runtime', 'unknown']).opts.runtime).toBe('claude')
+  })
+
+  it('should parse --agy-model and --agy-effort', () => {
+    const { opts } = parseOptions(['my goal', '--runtime', 'agy', '--agy-model', 'gemini-3.8-flash-low', '--agy-effort', 'max'])
+    expect(opts.runtime).toBe('agy')
+    expect(opts.agyModel).toBe('gemini-3.8-flash-low')
+    expect(opts.agyEffort).toBe('max')
+    expect(parseOptions(['my goal', '--agy-effort', 'deep']).opts.agyEffort).toBe('high')
+    expect(() => parseOptions(['my goal', '--agy-effort', 'invalid'])).toThrow(/Invalid agy effort/)
   })
 
   it('should parse --codex-model', () => {

@@ -5,7 +5,9 @@ import {
   buildRunBrainName,
   createRunSessionPlan,
   createRunLaunchPlan,
+  detectRequiredRuntimes,
   getRunSourceLabel,
+  normalizeRuntime,
   resolveRequestedProjectDir,
 } from './run-orchestrator.js'
 
@@ -111,5 +113,69 @@ describe('run orchestrator helpers', () => {
 
   it('generates stable brain names from goals', () => {
     expect(buildRunBrainName('Launch beta now')).toMatch(/^wanman-run-/)
+  })
+
+  it('normalizes agy runtime aliases and detects agy and mixed runtimes', () => {
+    expect(normalizeRuntime('agy')).toBe('agy')
+    expect(normalizeRuntime('atg')).toBe('agy')
+    expect(normalizeRuntime('antigravity')).toBe('agy')
+    expect(normalizeRuntime('codex')).toBe('codex')
+    expect(normalizeRuntime('other')).toBe('claude')
+
+    const agyPlan = createRunSessionPlan({
+      goal: 'Run with agy',
+      opts: {
+        runtime: undefined,
+        codexModel: undefined,
+        codexReasoningEffort: undefined,
+        agyModel: 'gemini-3.8-flash-low',
+        agyEffort: 'max',
+        workerUrl: undefined,
+      },
+      launchPlan: { projectDir: undefined, requestedProjectDir: undefined },
+      configName: 'agents.json',
+      configText: JSON.stringify({ agents: [{ name: 'ceo', runtime: 'antigravity' }] }),
+      standalone: true,
+      env: {},
+    })
+    expect(agyPlan.requiredRuntimes).toEqual(['agy'])
+    expect(agyPlan.runtimeLabel).toBe('agy')
+    expect(agyPlan.llmModeLabel).toBe('agy-cli')
+    expect(agyPlan.codexConfigLabel).toBeNull()
+    expect(agyPlan.agyConfigLabel).toBe('gemini-3.8-flash-low / max')
+
+    const envOverridePlan = createRunSessionPlan({
+      goal: 'Override with atg',
+      opts: { runtime: undefined, codexModel: undefined, codexReasoningEffort: undefined, workerUrl: undefined },
+      launchPlan: { projectDir: undefined, requestedProjectDir: undefined },
+      configName: 'agents.json',
+      configText: JSON.stringify({ agents: [{ name: 'ceo', runtime: 'claude' }] }),
+      standalone: true,
+      env: { WANMAN_RUNTIME: 'atg', WANMAN_AGY_MODEL: 'gemini-4-hydrogen-xhigh', WANMAN_AGY_EFFORT: 'high' },
+    })
+    expect(envOverridePlan.runtimeOverride).toBe('agy')
+    expect(envOverridePlan.requiredRuntimes).toEqual(['agy'])
+    expect(envOverridePlan.llmModeLabel).toBe('agy-cli')
+    expect(envOverridePlan.agyConfigLabel).toBe('gemini-4-hydrogen-xhigh / high')
+
+    const mixedPlan = createRunSessionPlan({
+      goal: 'Mixed runtimes',
+      opts: { runtime: undefined, codexModel: undefined, codexReasoningEffort: undefined, workerUrl: undefined },
+      launchPlan: { projectDir: undefined, requestedProjectDir: undefined },
+      configName: 'agents.json',
+      configText: JSON.stringify({
+        agents: [
+          { name: 'ceo', runtime: 'agy' },
+          { name: 'dev', runtime: 'codex' },
+        ],
+      }),
+      standalone: true,
+      env: {},
+    })
+    expect(mixedPlan.requiredRuntimes).toEqual(['agy', 'codex'])
+    expect(mixedPlan.llmModeLabel).toBe('multi-runtime')
+    expect(mixedPlan.agyConfigLabel).toBe('default / default')
+    expect(mixedPlan.codexConfigLabel).toBe('default / default')
+    expect(detectRequiredRuntimes('invalid-json')).toEqual(['claude'])
   })
 })

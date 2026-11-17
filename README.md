@@ -2,9 +2,9 @@
 
 **English** | [中文](README.zh.md) | [日本語](README.ja.md)
 
-Agent Matrix framework — run a supervised network of Claude Code or Codex agents that collaborate on your machine.
+Agent Matrix framework — run a supervised network of Claude Code, Codex, or Antigravity (`agy`) agents that collaborate on your machine.
 
-wanman is an open-source local-mode agent matrix framework. Runs a supervised network of Claude Code or Codex agents on your machine, coordinated through a JSON-RPC supervisor.
+wanman is an open-source local-mode agent matrix framework. Runs a supervised network of Claude Code, Codex, or Antigravity (`agy`) agents on your machine, coordinated through a JSON-RPC supervisor.
 
 ## About wanman
 
@@ -15,7 +15,7 @@ The name wanman comes from the Japanese [ワンマン電車 / one-man train](htt
 ## What it does
 
 - Coordinates multiple agents (CEO, dev, devops, marketing, feedback, etc.) through an async message bus with steer/follow-up priorities.
-- Runs each agent as a real Claude Code or Codex CLI subprocess — you bring your own CLI auth, wanman orchestrates spawning, prompting, and lifecycle.
+- Runs each agent as a real Claude Code, Codex, or Antigravity (`agy`) CLI subprocess — you bring your own CLI auth, wanman orchestrates spawning, prompting, and lifecycle.
 - Isolates every agent in a per-agent worktree and per-agent `$HOME`, so agents never mutate your dirty checkout or shell profile.
 - Is CLI-first: everything is scriptable, observable, and reproducible through `wanman` commands and a JSON-RPC supervisor.
 - Includes an experimental `@wanman/finops` toolkit for API credential inventory, provider cost sync, Stripe revenue sync, and product/company ROI summaries.
@@ -29,7 +29,7 @@ The name wanman comes from the Japanese [ワンマン電車 / one-man train](htt
 ## Quickstart
 
 ```bash
-# Prerequisites: Node 20+, pnpm 9+, git, a logged-in Claude Code or Codex CLI.
+# Prerequisites: Node 20+, pnpm 9+, git, and an authenticated Claude Code, Codex, or Antigravity (agy) CLI.
 git clone git@github.com:chekusu/wanman.git wanman.dev
 cd wanman.dev
 pnpm install
@@ -78,7 +78,7 @@ Run `wanman --help` for the full, current list.
 ```
 +----------------+          +--------------------+          +-----------------+
 |  wanman CLI    |  JSON    |  Supervisor        |  spawn   |  Agent process  |
-|  (host shell)  | ---RPC-->|  (local process)   | -------> |  (Claude/Codex) |
+|  (host shell)  | ---RPC-->|  (local process)   | -------> | (Claude/Codex/Agy)|
 |                |  /rpc    |  message/context/  |          |  per-agent $HOME|
 |                |          |  task/artifact     |          |  per-agent wt   |
 +----------------+          +--------------------+          +-----------------+
@@ -91,7 +91,7 @@ Run `wanman --help` for the full, current list.
 
 - `wanman <subcommand>` speaks JSON-RPC 2.0 to a Supervisor process.
 - The Supervisor owns the message store, context store, task pool, artifact store, and spawns one child process per agent.
-- Each agent child is a local Claude Code or Codex subprocess bound to a per-agent worktree and isolated `$HOME`.
+- Each agent child is a local Claude Code, Codex, or Antigravity (`agy`) subprocess bound to a per-agent worktree and isolated `$HOME`.
 
 Deep dive: [`docs/architecture.md`](docs/architecture.md).
 
@@ -101,9 +101,12 @@ Deep dive: [`docs/architecture.md`](docs/architecture.md).
 |---------|---------|
 | `WANMAN_URL` | Supervisor HTTP URL for the CLI (default `http://localhost:3120`). |
 | `WANMAN_AGENT_NAME` | Identifies the current agent; used as default sender/receiver inside agent processes. |
-| `WANMAN_RUNTIME` | `claude` (default) or `codex` — selects the per-agent CLI adapter. |
-| `WANMAN_MODEL`, `WANMAN_CODEX_MODEL`, `WANMAN_CODEX_REASONING_EFFORT` | Per-runtime model overrides. |
+| `WANMAN_RUNTIME` | `claude` (default), `codex`, or `agy` (aliases: `atg`, `antigravity`) — selects the per-agent CLI adapter. |
+| `WANMAN_MODEL`, `WANMAN_CODEX_MODEL`, `WANMAN_CODEX_REASONING_EFFORT` | Per-runtime model overrides (`WANMAN_MODEL` and Codex model/reasoning effort). |
 | `WANMAN_CODEX_FAST` | When set, biases the Codex adapter toward lower-latency defaults. |
+| `WANMAN_AGY_MODEL`, `WANMAN_AGY_HIGH_MODEL`, `WANMAN_AGY_STANDARD_MODEL` | Model overrides for the Antigravity (`agy`) adapter (use `default` to omit `--model`). |
+| `WANMAN_AGY_EFFORT` | Reasoning effort for `agy` (`low`, `medium`, `high`, `xhigh`, `max`). |
+| `WANMAN_AGY_BIN` | Override path to the `agy` binary (falls back to `PATH` and `~/.local/bin/agy`). |
 | `WANMAN_SKILL_SNAPSHOTS_DIR` | Override where the runtime materializes skill-activation snapshots (default: sibling of the shared-skills dir, falling back to `$TMPDIR/wanman-skill-snapshots`). |
 
 An optional `@sandbank.dev/db9` brain adapter can be attached for cross-run memory — see [`docs/architecture.md`](docs/architecture.md#brain--persistence).
@@ -126,9 +129,9 @@ Agent definitions live in a single JSON file:
 
 Each agent entry has:
 - `name` — unique identifier used on the message bus.
-- `lifecycle` — `24/7` (continuous respawn loop), `on-demand` (idle until triggered), or `idle_cached` (idle until triggered, but the prior Claude `session_id` is preserved across triggers via `claude --resume` so context survives idle periods). **`idle_cached` is Claude-only**: pairing it with `runtime: codex` (or `WANMAN_RUNTIME=codex`) is rejected at startup since Codex has no equivalent resume mechanism in this runtime.
-- `model` — usually an abstract tier (`high` or `standard`); the runtime adapter maps it to Claude or Codex defaults, with environment overrides available.
-- `systemPrompt` — baked-in persona/mission; agents also auto-discover shared skill files at `~/.claude/skills/`.
+- `lifecycle` — `24/7` (continuous respawn loop), `on-demand` (idle until triggered), or `idle_cached` (idle until triggered, preserving conversation context across triggers via `claude --resume` or `agy --conversation`). **`idle_cached` is supported on `claude` and `agy`**: pairing it with `runtime: codex` (or `WANMAN_RUNTIME=codex`) is rejected at startup since Codex has no equivalent resume mechanism in this runtime.
+- `model` — usually an abstract tier (`high` or `standard`); the runtime adapter maps it to Claude, Codex, or Antigravity (`agy`) defaults, with environment overrides available.
+- `systemPrompt` — baked-in persona/mission; agents also auto-discover shared skill files under `~/.claude/skills/`, `~/.codex/skills/`, or `~/.gemini/config/skills/`.
 - Optional `cron`, `events`, and `tools` fields — see the architecture doc for the full schema.
 
 ## Testing

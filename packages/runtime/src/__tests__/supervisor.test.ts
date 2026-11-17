@@ -532,6 +532,32 @@ describe('Supervisor', () => {
         fs.rmSync(workspaceRoot, { recursive: true, force: true })
       }
     })
+
+    it('enriches agy agent prompts with the runtime protocol', async () => {
+      const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wanman-agy-workspace-'))
+      fs.mkdirSync(path.join(workspaceRoot, 'ceo'), { recursive: true })
+      fs.writeFileSync(path.join(workspaceRoot, 'ceo', 'AGENT.md'), '# CEO agent')
+
+      createdAgentDefinitions = []
+      const sv = new Supervisor(makeConfig({
+        workspaceRoot,
+        goal: 'Ship agy support',
+        agents: [
+          { name: 'ceo', lifecycle: '24/7', model: 'high', runtime: 'agy', systemPrompt: 'ceo bot' },
+        ],
+      }))
+
+      try {
+        await sv.start()
+        const ceoDefinition = createdAgentDefinitions.find(def => def['name'] === 'ceo')
+        expect(ceoDefinition).toBeTruthy()
+        expect(ceoDefinition?.['systemPrompt']).toEqual(expect.stringContaining('# Mandatory Protocol'))
+        expect(ceoDefinition?.['systemPrompt']).toEqual(expect.stringContaining('Role guide:'))
+      } finally {
+        await sv.shutdown()
+        fs.rmSync(workspaceRoot, { recursive: true, force: true })
+      }
+    })
   })
 
   describe('run completion metrics', () => {

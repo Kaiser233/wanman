@@ -10,6 +10,7 @@
 
 import * as fs from 'node:fs'
 import type { AgentRuntime } from '@wanman/core'
+import { normalizeRuntime } from '@wanman/host-sdk'
 import {
   type GeneratedAgentConfig,
   type ProjectDocument,
@@ -75,15 +76,17 @@ Usage:
   wanman takeover <path> [options]
 
 Runs the supervisor + agents locally against the target repo. Authenticate
-agent runtimes on the host (e.g. 'claude login' or 'codex login') before
-running.
+agent runtimes on the host (e.g. 'claude login', 'codex login', or 'agy')
+before running.
 
 Options:
   --goal <text>         Override auto-inferred long-running mission
-  --runtime <name>      Agent runtime: claude (default) or codex
+  --runtime <name>      Agent runtime: claude (default), codex, or agy (aliases: atg, antigravity)
   --codex-model <name>  Codex model override
   --codex-effort <lvl>  Codex reasoning effort: low|medium|high|xhigh
   --codex-speed <lvl>   Alias for --codex-effort using fast|balanced|deep|max
+  --agy-model <name>    Antigravity (agy) model override
+  --agy-effort <lvl>    Antigravity (agy) reasoning effort: low|medium|high|xhigh|max
   --dry-run             Scan and generate takeover overlay without launching
   --infinite            Run in infinite mode (default: true)
   --loops <n>           Run finite loops instead of infinite mode
@@ -113,7 +116,7 @@ function splitTakeoverArgs(args: string[]): {
         goalOverride = args[++i]
         break
       case '--runtime':
-        runtime = args[++i] === 'codex' ? 'codex' : 'claude'
+        runtime = normalizeRuntime(args[++i])
         break
       case '--dry-run':
         dryRun = true

@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { AgentRuntime } from '@wanman/core'
 import { createEnvBackedWanmanHostSdk, createWanmanHostSdk, type WanmanHostSdkAdapters } from './host-sdk-factory.js'
+import { createRunOptions, normalizeRuntime } from './run-options.js'
 
 interface ConcreteTakeoverOptions {
   projectPath: string
   goalOverride?: string
-  runtime: 'claude' | 'codex'
+  runtime: AgentRuntime
   githubToken?: string
   enableBrain: boolean
 }
@@ -31,7 +33,7 @@ const hostSdkAdapters: WanmanHostSdkAdapters<Record<string, never>, typeof prepa
     return {
       projectPath: options.projectPath,
       goalOverride: options.goalOverride,
-      runtime: (options.runtime as 'claude' | 'codex' | undefined) ?? 'claude',
+      runtime: options.runtime ? normalizeRuntime(options.runtime) : 'claude',
       githubToken: options.githubToken,
       enableBrain: options.enableBrain ?? true,
     }
@@ -131,5 +133,31 @@ describe('createEnvBackedWanmanHostSdk', () => {
         }),
       }),
     )
+  })
+
+  it('normalizes agy runtime aliases and forwards agy model/effort options', async () => {
+    const sdk = createWanmanHostSdk({}, hostSdkAdapters)
+
+    await sdk.run('use agy', {
+      runtime: 'antigravity' as AgentRuntime,
+      agyModel: 'gemini-3.8-flash-low',
+      agyEffort: 'max',
+    })
+
+    expect(adapters.runGoal).toHaveBeenCalledWith(
+      'use agy',
+      expect.objectContaining({
+        runtime: 'agy',
+        agyModel: 'gemini-3.8-flash-low',
+        agyEffort: 'max',
+      }),
+      {},
+      expect.any(Object),
+    )
+
+    expect(normalizeRuntime('atg')).toBe('agy')
+    expect(normalizeRuntime('ANTIGRAVITY')).toBe('agy')
+    expect(normalizeRuntime('gemini')).toBe('claude')
+    expect(createRunOptions({ runtime: 'atg' as AgentRuntime }).runtime).toBe('agy')
   })
 })

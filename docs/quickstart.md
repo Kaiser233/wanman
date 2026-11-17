@@ -8,9 +8,10 @@ This walks through a complete first-run of wanman against any git repo on your m
 
 - **Node.js 20+** and **pnpm 9+** (`corepack enable && corepack prepare pnpm@9.15.0 --activate`).
 - **git**.
-- An authenticated Claude Code CLI *or* Codex CLI — wanman spawns these as agent subprocesses and relies on whatever auth they already have.
+- An authenticated Claude Code, Codex, *or* Antigravity (`agy`) CLI — wanman spawns these as agent subprocesses and relies on their host auth.
   - Claude Code: install `@anthropic-ai/claude-code` globally and run its login flow (`claude` then follow prompts).
   - Codex: install `@openai/codex` globally and sign in per the Codex CLI docs.
+  - Antigravity (`agy`): install `agy` (on `PATH` or `~/.local/bin/agy`, or set `WANMAN_AGY_BIN`) and authenticate via interactive host sign-in (macOS Keychain credentials stored by `agy`, e.g. service `gemini` / account `antigravity`), `AGY_ADC_AUTH=true`, or `GEMINI_API_KEY` with `"modelProvider": "gemini"` in `~/.gemini/antigravity-cli/settings.json`.
 - **Any existing git repository** you're willing to let agents read and scribble in. wanman will copy it into an isolated worktree and never mutate your dirty checkout.
 
 Optional:
@@ -51,11 +52,13 @@ What happens:
 4. It spawns agents (Claude Code subprocesses by default) under an isolated `.wanman/home/` so shell profile changes stay out of your real `$HOME`.
 5. Takeover stays in the foreground, streaming agent activity.
 
-Choose a runtime with `--runtime`:
+Choose a runtime with `--runtime` (and optional per-runtime model/effort flags):
 
 ```bash
 wanman takeover . --runtime claude   # default
 wanman takeover . --runtime codex
+wanman takeover . --runtime agy      # aliases: atg, antigravity
+wanman takeover . --runtime agy --agy-model gemini-3.8-flash-low --agy-effort high
 ```
 
 ## 4. Talk to the matrix
