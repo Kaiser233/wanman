@@ -99,57 +99,6 @@ describe('Supervisor', () => {
       expect((res.result as Record<string, unknown>).id).toBeTruthy()
     })
 
-    it('posts a best-effort thread sync event when story sync env is present', () => {
-      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-        new Response(null, { status: 200 }),
-      )
-      const previousEnv = {
-        WANMAN_SYNC_URL: process.env['WANMAN_SYNC_URL'],
-        WANMAN_SYNC_SECRET: process.env['WANMAN_SYNC_SECRET'],
-        WANMAN_STORY_ID: process.env['WANMAN_STORY_ID'],
-      }
-      process.env['WANMAN_SYNC_URL'] = 'https://api.example.com/api/sync'
-      process.env['WANMAN_SYNC_SECRET'] = 'sync-secret'
-      process.env['WANMAN_STORY_ID'] = 'story-1'
-
-      try {
-        supervisor.handleRpc(rpc(RPC_METHODS.AGENT_SEND, {
-          from: 'echo',
-          to: 'ping',
-          type: 'message',
-          payload: 'Please revise the rollout plan.',
-          priority: 'steer',
-        }))
-
-        expect(fetchSpy).toHaveBeenCalledWith(
-          'https://api.example.com/api/sync/event',
-          expect.objectContaining({
-            method: 'POST',
-            body: JSON.stringify({
-              event_type: 'thread',
-              classification: 'steer',
-              agent: 'echo',
-              payload: {
-                from: 'echo',
-                to: 'ping',
-                type: 'message',
-                payload: 'Please revise the rollout plan.',
-                priority: 'steer',
-              },
-            }),
-          }),
-        )
-      } finally {
-        if (previousEnv.WANMAN_SYNC_URL === undefined) delete process.env['WANMAN_SYNC_URL']
-        else process.env['WANMAN_SYNC_URL'] = previousEnv.WANMAN_SYNC_URL
-        if (previousEnv.WANMAN_SYNC_SECRET === undefined) delete process.env['WANMAN_SYNC_SECRET']
-        else process.env['WANMAN_SYNC_SECRET'] = previousEnv.WANMAN_SYNC_SECRET
-        if (previousEnv.WANMAN_STORY_ID === undefined) delete process.env['WANMAN_STORY_ID']
-        else process.env['WANMAN_STORY_ID'] = previousEnv.WANMAN_STORY_ID
-        fetchSpy.mockRestore()
-      }
-    })
-
     it('accepts human as a special conversation target without queueing relay delivery', () => {
       const relay = (supervisor as unknown as {
         relay: { send: (from: string, to: string, type: string, payload: unknown, priority: string) => string }
@@ -167,159 +116,6 @@ describe('Supervisor', () => {
       expect(res.error).toBeUndefined()
       expect((res.result as Record<string, unknown>).status).toBe('queued')
       expect(sendSpy).not.toHaveBeenCalled()
-    })
-
-    it('infers decision type for normal human-directed messages in story sync', () => {
-      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-        new Response(null, { status: 200 }),
-      )
-      const previousEnv = {
-        WANMAN_SYNC_URL: process.env['WANMAN_SYNC_URL'],
-        WANMAN_SYNC_SECRET: process.env['WANMAN_SYNC_SECRET'],
-        WANMAN_STORY_ID: process.env['WANMAN_STORY_ID'],
-      }
-      process.env['WANMAN_SYNC_URL'] = 'https://api.example.com/api/sync'
-      process.env['WANMAN_SYNC_SECRET'] = 'sync-secret'
-      process.env['WANMAN_STORY_ID'] = 'story-1'
-
-      try {
-        supervisor.handleRpc(rpc(RPC_METHODS.AGENT_SEND, {
-          from: 'ceo',
-          to: 'human',
-          type: 'message',
-          payload: 'Do you approve the rollout?',
-          priority: 'normal',
-        }))
-
-        expect(fetchSpy).toHaveBeenCalledWith(
-          'https://api.example.com/api/sync/event',
-          expect.objectContaining({
-            method: 'POST',
-            body: JSON.stringify({
-              event_type: 'thread',
-              classification: 'normal',
-              agent: 'ceo',
-              payload: {
-                from: 'ceo',
-                to: 'human',
-                type: 'decision',
-                payload: 'Do you approve the rollout?',
-                priority: 'normal',
-              },
-            }),
-          }),
-        )
-      } finally {
-        if (previousEnv.WANMAN_SYNC_URL === undefined) delete process.env['WANMAN_SYNC_URL']
-        else process.env['WANMAN_SYNC_URL'] = previousEnv.WANMAN_SYNC_URL
-        if (previousEnv.WANMAN_SYNC_SECRET === undefined) delete process.env['WANMAN_SYNC_SECRET']
-        else process.env['WANMAN_SYNC_SECRET'] = previousEnv.WANMAN_SYNC_SECRET
-        if (previousEnv.WANMAN_STORY_ID === undefined) delete process.env['WANMAN_STORY_ID']
-        else process.env['WANMAN_STORY_ID'] = previousEnv.WANMAN_STORY_ID
-        fetchSpy.mockRestore()
-      }
-    })
-
-    it('infers blocker type for steer human-directed messages in story sync', () => {
-      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-        new Response(null, { status: 200 }),
-      )
-      const previousEnv = {
-        WANMAN_SYNC_URL: process.env['WANMAN_SYNC_URL'],
-        WANMAN_SYNC_SECRET: process.env['WANMAN_SYNC_SECRET'],
-        WANMAN_STORY_ID: process.env['WANMAN_STORY_ID'],
-      }
-      process.env['WANMAN_SYNC_URL'] = 'https://api.example.com/api/sync'
-      process.env['WANMAN_SYNC_SECRET'] = 'sync-secret'
-      process.env['WANMAN_STORY_ID'] = 'story-1'
-
-      try {
-        supervisor.handleRpc(rpc(RPC_METHODS.AGENT_SEND, {
-          from: 'dev',
-          to: 'human',
-          type: 'message',
-          payload: 'I am blocked until you grant repo access.',
-          priority: 'steer',
-        }))
-
-        expect(fetchSpy).toHaveBeenCalledWith(
-          'https://api.example.com/api/sync/event',
-          expect.objectContaining({
-            method: 'POST',
-            body: JSON.stringify({
-              event_type: 'thread',
-              classification: 'steer',
-              agent: 'dev',
-              payload: {
-                from: 'dev',
-                to: 'human',
-                type: 'blocker',
-                payload: 'I am blocked until you grant repo access.',
-                priority: 'steer',
-              },
-            }),
-          }),
-        )
-      } finally {
-        if (previousEnv.WANMAN_SYNC_URL === undefined) delete process.env['WANMAN_SYNC_URL']
-        else process.env['WANMAN_SYNC_URL'] = previousEnv.WANMAN_SYNC_URL
-        if (previousEnv.WANMAN_SYNC_SECRET === undefined) delete process.env['WANMAN_SYNC_SECRET']
-        else process.env['WANMAN_SYNC_SECRET'] = previousEnv.WANMAN_SYNC_SECRET
-        if (previousEnv.WANMAN_STORY_ID === undefined) delete process.env['WANMAN_STORY_ID']
-        else process.env['WANMAN_STORY_ID'] = previousEnv.WANMAN_STORY_ID
-        fetchSpy.mockRestore()
-      }
-    })
-
-    it('preserves explicit human-directed message types in story sync', () => {
-      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-        new Response(null, { status: 200 }),
-      )
-      const previousEnv = {
-        WANMAN_SYNC_URL: process.env['WANMAN_SYNC_URL'],
-        WANMAN_SYNC_SECRET: process.env['WANMAN_SYNC_SECRET'],
-        WANMAN_STORY_ID: process.env['WANMAN_STORY_ID'],
-      }
-      process.env['WANMAN_SYNC_URL'] = 'https://api.example.com/api/sync'
-      process.env['WANMAN_SYNC_SECRET'] = 'sync-secret'
-      process.env['WANMAN_STORY_ID'] = 'story-1'
-
-      try {
-        supervisor.handleRpc(rpc(RPC_METHODS.AGENT_SEND, {
-          from: 'dev',
-          to: 'human',
-          type: 'decision',
-          payload: 'Choose between patch A and patch B.',
-          priority: 'normal',
-        }))
-
-        expect(fetchSpy).toHaveBeenCalledWith(
-          'https://api.example.com/api/sync/event',
-          expect.objectContaining({
-            method: 'POST',
-            body: JSON.stringify({
-              event_type: 'thread',
-              classification: 'normal',
-              agent: 'dev',
-              payload: {
-                from: 'dev',
-                to: 'human',
-                type: 'decision',
-                payload: 'Choose between patch A and patch B.',
-                priority: 'normal',
-              },
-            }),
-          }),
-        )
-      } finally {
-        if (previousEnv.WANMAN_SYNC_URL === undefined) delete process.env['WANMAN_SYNC_URL']
-        else process.env['WANMAN_SYNC_URL'] = previousEnv.WANMAN_SYNC_URL
-        if (previousEnv.WANMAN_SYNC_SECRET === undefined) delete process.env['WANMAN_SYNC_SECRET']
-        else process.env['WANMAN_SYNC_SECRET'] = previousEnv.WANMAN_SYNC_SECRET
-        if (previousEnv.WANMAN_STORY_ID === undefined) delete process.env['WANMAN_STORY_ID']
-        else process.env['WANMAN_STORY_ID'] = previousEnv.WANMAN_STORY_ID
-        fetchSpy.mockRestore()
-      }
     })
 
     it('should return error for unknown target agent', () => {
@@ -598,10 +394,8 @@ describe('Supervisor', () => {
       expect(usage.total).toBe(2100)
       expect(usage.byAgent.echo).toBe(2100)
 
-      const sql = String((executeSQL.mock.calls[0] ?? [''])[0] ?? '')
-      expect(sql).toContain('token_count')
-      expect(sql).toContain('activation_snapshot_id')
-      expect(sql).toContain('execution_profile')
+      const health = supervisor.getHealth()
+      expect(health.budget?.totalTokens).toBe(2100)
     })
   })
 
@@ -785,105 +579,63 @@ describe('Supervisor', () => {
     })
   })
 
-  describe('brain-backed RPC success paths', () => {
-    it('stores, lists, and fetches artifacts through the brain manager', async () => {
-      const executeSQL = vi.fn().mockResolvedValue([{ id: 42, agent: 'ceo', kind: 'note' }])
-      ;(supervisor as unknown as { brainManager: unknown }).brainManager = {
-        isInitialized: true,
-        executeSQL,
-      }
-      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-        new Response(null, { status: 200 }),
-      )
-      const previousEnv = {
-        WANMAN_SYNC_URL: process.env['WANMAN_SYNC_URL'],
-        WANMAN_SYNC_SECRET: process.env['WANMAN_SYNC_SECRET'],
-        WANMAN_STORY_ID: process.env['WANMAN_STORY_ID'],
-      }
-      process.env['WANMAN_SYNC_URL'] = 'https://api.example.com/api/sync'
-      process.env['WANMAN_SYNC_SECRET'] = 'sync-secret'
-      process.env['WANMAN_STORY_ID'] = 'story-1'
-
-      try {
-        supervisor.initEventBus('run-1')
-        const put = await supervisor.handleRpcAsync(rpc(RPC_METHODS.ARTIFACT_PUT, {
-          kind: 'note',
-          agent: 'ceo',
-          source: 'test',
-          confidence: 0.9,
-          path: 'notes/one.md',
-          content: 'hello',
-          metadata: { topic: 'coverage' },
-        }))
-        expect(put.error).toBeUndefined()
-        expect(executeSQL.mock.calls.at(-1)?.[0]).toContain('INSERT INTO artifacts')
-        expect(fetchSpy).toHaveBeenCalledWith(
-          'https://api.example.com/api/sync/artifact',
-          expect.objectContaining({ method: 'POST' }),
-        )
-
-        const list = await supervisor.handleRpcAsync(rpc(RPC_METHODS.ARTIFACT_LIST, {
-          agent: 'ceo',
-          kind: 'note',
-          verified: true,
-        }))
-        expect(list.error).toBeUndefined()
-        expect(executeSQL.mock.calls.at(-1)?.[0]).toContain("metadata->>'verified' = 'true'")
-
-        const get = await supervisor.handleRpcAsync(rpc(RPC_METHODS.ARTIFACT_GET, { id: 42 }))
-        expect(get.error).toBeUndefined()
-        expect(executeSQL.mock.calls.at(-1)?.[0]).toContain('WHERE id = 42')
-      } finally {
-        if (previousEnv.WANMAN_SYNC_URL === undefined) delete process.env['WANMAN_SYNC_URL']
-        else process.env['WANMAN_SYNC_URL'] = previousEnv.WANMAN_SYNC_URL
-        if (previousEnv.WANMAN_SYNC_SECRET === undefined) delete process.env['WANMAN_SYNC_SECRET']
-        else process.env['WANMAN_SYNC_SECRET'] = previousEnv.WANMAN_SYNC_SECRET
-        if (previousEnv.WANMAN_STORY_ID === undefined) delete process.env['WANMAN_STORY_ID']
-        else process.env['WANMAN_STORY_ID'] = previousEnv.WANMAN_STORY_ID
-        fetchSpy.mockRestore()
-      }
-    })
-
-    it('creates, lists, and updates hypotheses through the brain manager', async () => {
-      const executeSQL = vi.fn().mockResolvedValue([{ id: 7, status: 'validated' }])
-      ;(supervisor as unknown as { brainManager: unknown }).brainManager = {
-        isInitialized: true,
-        executeSQL,
-      }
-
-      const created = await supervisor.handleRpcAsync(rpc(RPC_METHODS.HYPOTHESIS_CREATE, {
-        title: 'Users need local mode',
+  describe('local SQLite artifact RPC paths', () => {
+    it('stores, lists, and fetches artifacts locally without cloud db9', async () => {
+      supervisor.initEventBus('run-1')
+      const put = await supervisor.handleRpcAsync(rpc(RPC_METHODS.ARTIFACT_PUT, {
+        kind: 'note',
         agent: 'ceo',
-        rationale: 'OSS installs are simpler',
-        expectedValue: 'activation',
-        estimatedCost: 'small',
-        parentId: 1,
+        source: 'test',
+        confidence: 0.9,
+        path: 'notes/one.md',
+        content: 'hello',
+        metadata: { topic: 'coverage' },
       }))
-      expect(created.error).toBeUndefined()
-      expect(executeSQL.mock.calls.at(-1)?.[0]).toContain('INSERT INTO hypotheses')
+      expect(put.error).toBeUndefined()
+      const inserted = (put.result as Array<{ id: number }>)[0]!
+      expect(inserted.id).toBeGreaterThan(0)
 
-      const tree = await supervisor.handleRpcAsync(rpc(RPC_METHODS.HYPOTHESIS_LIST, {
-        treeRoot: 7,
+      const list = await supervisor.handleRpcAsync(rpc(RPC_METHODS.ARTIFACT_LIST, {
+        agent: 'ceo',
+        kind: 'note',
       }))
-      expect(tree.error).toBeUndefined()
-      expect(executeSQL.mock.calls.at(-1)?.[0]).toContain('WITH RECURSIVE tree')
+      expect(list.error).toBeUndefined()
+      expect((list.result as Array<{ id: number }>).some(r => r.id === inserted.id)).toBe(true)
 
-      const filtered = await supervisor.handleRpcAsync(rpc(RPC_METHODS.HYPOTHESIS_LIST, {
-        status: 'active',
-      }))
-      expect(filtered.error).toBeUndefined()
-      expect(executeSQL.mock.calls.at(-1)?.[0]).toContain("status = 'active'")
+      const get = await supervisor.handleRpcAsync(rpc(RPC_METHODS.ARTIFACT_GET, { id: inserted.id }))
+      expect(get.error).toBeUndefined()
+      expect((get.result as Array<{ content: string }>)[0]?.content).toBe('hello')
+    })
+  })
 
-      const updated = await supervisor.handleRpcAsync(rpc(RPC_METHODS.HYPOTHESIS_UPDATE, {
-        id: 7,
-        status: 'validated',
-        outcome: 'confirmed',
-        evidence: [42, 43],
-      }))
-      expect(updated.error).toBeUndefined()
-      const updateSql = String(executeSQL.mock.calls.at(-1)?.[0])
-      expect(updateSql).toContain('evidence_artifact_ids = ARRAY[42,43]')
-      expect(updateSql).toContain('resolved_at = now()')
+  describe('global token & duration circuit breakers', () => {
+    it('halts all agents when global token budget is exceeded and reports budget in getHealth()', async () => {
+      const sv = new Supervisor(makeConfig({ tokenBudget: 5000, maxDurationMs: 60_000 }))
+      sv.initEventBus('run-breaker')
+      await sv.start()
+
+      const events: Array<{ type: string; reason?: string }> = []
+      sv.eventBus?.on((event) => events.push(event as { type: string; reason?: string }))
+
+      sv.recordTokenUsage('echo', 2000, 1000)
+      ;(sv as unknown as { enforceTokenBudget(agent: string): void }).enforceTokenBudget('echo')
+      expect(sv.isHalted).toBe(false)
+
+      sv.recordTokenUsage('ping', 1500, 1000)
+      ;(sv as unknown as { enforceTokenBudget(agent: string): void }).enforceTokenBudget('ping')
+      expect(sv.isHalted).toBe(true)
+      expect(sv.haltReason).toBe('token_budget_exceeded')
+
+      const health = sv.getHealth()
+      expect(health.budget).toMatchObject({
+        totalTokens: 5500,
+        tokenBudget: 5000,
+        halted: true,
+        haltReason: 'token_budget_exceeded',
+      })
+      expect(events.some(e => e.type === 'run.halted' && e.reason === 'token_budget_exceeded')).toBe(true)
+
+      await sv.shutdown()
     })
   })
 
@@ -1122,8 +874,7 @@ describe('Supervisor', () => {
         totalTokens: 15,
       })
 
-      expect(executeSQL).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO run_feedback'))
-      expect(executeSQL.mock.calls.at(-1)?.[0]).toContain('snapshot-1')
+      expect(supervisor.tokenTracker.getUsage('run-1').byAgent['ping']).toBe(15)
     })
   })
 

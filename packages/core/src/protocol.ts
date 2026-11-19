@@ -92,18 +92,12 @@ export const RPC_METHODS = {
   CAPSULE_UPDATE: 'capsule.update',
   /** List active capsules owned by an agent */
   CAPSULE_MINE: 'capsule.mine',
-  /** Store a structured artifact in db9 brain */
+  /** Store a structured artifact in local SQLite storage */
   ARTIFACT_PUT: 'artifact.put',
   /** List artifacts (optionally filtered) */
   ARTIFACT_LIST: 'artifact.list',
   /** Get a single artifact by ID (with full content) */
   ARTIFACT_GET: 'artifact.get',
-  /** Create a hypothesis */
-  HYPOTHESIS_CREATE: 'hypothesis.create',
-  /** List hypotheses */
-  HYPOTHESIS_LIST: 'hypothesis.list',
-  /** Update hypothesis status */
-  HYPOTHESIS_UPDATE: 'hypothesis.update',
 
   // ── Skill management ──
   /** Get active skill content for an agent */

@@ -14,6 +14,7 @@ import {
   maybeNudgeLocalPrExecution,
   parseLocalGitStatus,
   planLocalDynamicClone,
+  warnLocalEnvironment,
 } from './takeover-local.js'
 import type { GeneratedAgentConfig, ProjectProfile } from './takeover-project.js'
 
@@ -129,7 +130,7 @@ describe('local takeover progress helpers', () => {
 
     expect(state.loop).toBe(1)
     expect(state.maxLoops).toBe(1)
-    expect(state.brainName).toBe('PR: https://github.com/acme/app/pull/1')
+    expect(state.branchLabel).toBe('PR: https://github.com/acme/app/pull/1')
     expect(state.agents.map(agent => agent.name)).toEqual(['ceo', 'dev', 'dev-1'])
     expect(state.tasks).toHaveLength(1)
     expect(state.artifacts).toHaveLength(1)
@@ -263,6 +264,29 @@ describe('materializeLocalTakeoverProject', () => {
     expect(agentsConfig.gitRoot).toBe(path.join(wanmanDir, 'worktree'))
     expect(agentsConfig.agents[0]?.model).toBe('high')
     expect(fs.readFileSync(path.join(wanmanDir, 'skills', 'takeover-context', 'SKILL.md'), 'utf-8')).toContain('Ship project')
+  })
+
+  it('does not warn about wanman monorepo dist files on external repos', () => {
+    const repo = makeTmpDir()
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      warnLocalEnvironment({
+        path: repo,
+        languages: ['python'],
+        packageManagers: [],
+        frameworks: [],
+        ci: [],
+        testFrameworks: ['pytest'],
+        hasReadme: true,
+        hasClaudeMd: false,
+        hasDocs: false,
+        issueTracker: 'none',
+      }, repo)
+      expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining('packages/cli/dist/index.js'))
+      expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining('packages/runtime/dist/entrypoint.js'))
+    } finally {
+      logSpy.mockRestore()
+    }
   })
 })
 

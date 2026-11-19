@@ -93,13 +93,6 @@ export function spawnCodexExec(opts: AgentRunOptions): AgentRunHandle {
   }
   codexArgs.push(prompt);
 
-  const runAsUser = opts.runAsUser;
-  const useRunuser = runAsUser && process.getuid?.() === 0;
-  const cmd = useRunuser ? 'runuser' : 'codex';
-  const args = useRunuser
-    ? ['-u', runAsUser, '--', 'codex', ...codexArgs]
-    : codexArgs;
-
   log.info('spawning', {
     runtime: 'codex',
     cwd: opts.cwd,
@@ -108,12 +101,11 @@ export function spawnCodexExec(opts: AgentRunOptions): AgentRunHandle {
     ...(opts.fast ? { fast: true } : {}),
   });
 
-  const proc = spawn(cmd, args, {
+  const proc = spawn('codex', codexArgs, {
     cwd: opts.cwd,
     env: {
       ...process.env,
       SHELL: '/bin/bash',
-      ...(useRunuser ? { HOME: `/home/${runAsUser}` } : {}),
       DISABLE_AUTOUPDATER: '1',
       DISABLE_TELEMETRY: '1',
       DISABLE_ERROR_REPORTING: '1',

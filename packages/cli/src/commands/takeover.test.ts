@@ -22,6 +22,7 @@ import {
   materializeTakeoverProject,
   parseLocalGitStatus,
   planLocalDynamicClone,
+  resolveTakeoverRunOptions,
   takeoverCommand,
   type ProjectProfile,
 } from './takeover.js'
@@ -494,11 +495,11 @@ describe('generateAgentConfig', () => {
     expect(config.goal).toContain('Continuously take over and advance')
   })
 
-  it('should default to claude runtime', () => {
+  it('should default to agy runtime', () => {
     const config = generateAgentConfig(fullProfile)
-    expect(config.runtime).toBe('claude')
+    expect(config.runtime).toBe('agy')
     for (const agent of config.agents) {
-      expect(agent.runtime).toBe('claude')
+      expect(agent.runtime).toBe('agy')
     }
     expect(config.agents.find(a => a.name === 'ceo')!.model).toBe('high')
     expect(config.agents.find(a => a.name === 'devops')!.model).toBe('standard')
@@ -626,7 +627,7 @@ describe('materializeTakeoverProject', () => {
 
     const profile = scanProject(tmpDir)
     const generated = generateAgentConfig(profile, undefined, 'codex')
-    const overlayDir = materializeLocalTakeoverProject(profile, generated, { enableBrain: false })
+    const overlayDir = materializeLocalTakeoverProject(profile, generated, { worktreeIsolation: true })
 
     const skill = readFileSync(join(overlayDir, 'skills', 'takeover-context', 'SKILL.md'), 'utf-8')
     const agentGuide = readFileSync(join(overlayDir, 'agents', 'ceo', 'AGENT.md'), 'utf-8')
@@ -788,8 +789,8 @@ describe('takeoverCommand', () => {
         '--goal', 'Custom OSS mission',
         '--dry-run',
         '--loops', '2',
-        '--no-brain',
         '--codex-model', 'gpt-test',
+        '--max-tokens', '500000',
       ])
     } finally {
       logSpy.mockRestore()
@@ -798,10 +799,14 @@ describe('takeoverCommand', () => {
     const config = JSON.parse(readFileSync(join(tmpDir, '.wanman', 'agents.json'), 'utf-8')) as {
       goal: string
       gitRoot: string
+      worktreeIsolation?: boolean
+      tokenBudget?: number
       agents: Array<{ runtime: string; model: string }>
     }
     expect(config.goal).toBe('Custom OSS mission')
     expect(config.gitRoot).toBe(join(tmpDir, '.wanman', 'worktree'))
+    expect(config.worktreeIsolation).toBe(true)
+    expect(config.tokenBudget).toBe(500_000)
     expect(new Set(config.agents.map(agent => agent.runtime))).toEqual(new Set(['codex']))
     expect(config.agents.map(agent => agent.model)).toContain('high')
     expect(config.agents.map(agent => agent.model)).toContain('standard')
@@ -809,7 +814,7 @@ describe('takeoverCommand', () => {
     expect(logs.join('\n')).toContain('Dry run complete')
   })
 
-  it('normalizes agy runtime aliases in takeoverCommand dry-run', async () => {
+  it('defaults to agy with worktreeIsolation and honors aliases and --no-worktree-isolation', async () => {
     execSync('git init', { cwd: tmpDir, stdio: 'ignore' })
     execSync('git config user.email test@example.com', { cwd: tmpDir, stdio: 'ignore' })
     execSync('git config user.name Test', { cwd: tmpDir, stdio: 'ignore' })
@@ -822,19 +827,47 @@ describe('takeoverCommand', () => {
     try {
       await takeoverCommand([
         tmpDir,
-        '--runtime', 'atg',
         '--agy-model', 'gemini-3.8-flash-low',
         '--agy-effort', 'max',
         '--dry-run',
-        '--no-brain',
       ])
+      const defaultConfig = JSON.parse(readFileSync(join(tmpDir, '.wanman', 'agents.json'), 'utf-8')) as {
+        worktreeIsolation?: boolean
+        agents: Array<{ runtime: string }>
+      }
+      expect(defaultConfig.worktreeIsolation).toBe(true)
+      expect(new Set(defaultConfig.agents.map(agent => agent.runtime))).toEqual(new Set(['agy']))
+
+      await takeoverCommand([
+        tmpDir,
+        '--runtime', 'atg',
+        '--no-worktree-isolation',
+        '--dry-run',
+      ])
+      const sharedConfig = JSON.parse(readFileSync(join(tmpDir, '.wanman', 'agents.json'), 'utf-8')) as {
+        worktreeIsolation?: boolean
+        agents: Array<{ runtime: string }>
+      }
+      expect(sharedConfig.worktreeIsolation).toBe(false)
+      expect(new Set(sharedConfig.agents.map(agent => agent.runtime))).toEqual(new Set(['agy']))
     } finally {
       logSpy.mockRestore()
     }
+  })
 
-    const config = JSON.parse(readFileSync(join(tmpDir, '.wanman', 'agents.json'), 'utf-8')) as {
-      agents: Array<{ runtime: string }>
-    }
-    expect(new Set(config.agents.map(agent => agent.runtime))).toEqual(new Set(['agy']))
+  it('honors explicit --loops instead of forcing --infinite, while defaulting to --infinite + worktreeIsolation', () => {
+    const finite = resolveTakeoverRunOptions('ship', ['--loops', '5', '--max-tokens', '250000'])
+    expect(finite.infinite).toBe(false)
+    expect(finite.loops).toBe(5)
+    expect(finite.worktreeIsolation).toBe(true)
+    expect(finite.maxTokens).toBe(250_000)
+
+    const defaultMode = resolveTakeoverRunOptions('ship', [])
+    expect(defaultMode.infinite).toBe(true)
+    expect(defaultMode.loops).toBe(Infinity)
+    expect(defaultMode.worktreeIsolation).toBe(true)
+
+    const shared = resolveTakeoverRunOptions('ship', ['--no-worktree-isolation'])
+    expect(shared.worktreeIsolation).toBe(false)
   })
 })

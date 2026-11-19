@@ -55,7 +55,6 @@ export interface AgentRunOptions {
    */
   resumeSessionId?: string;
   env?: Record<string, string>;
-  runAsUser?: string;
 }
 
 export interface AgentAdapter {
@@ -65,23 +64,24 @@ export interface AgentAdapter {
 
 export function normalizeAgentRuntime(value?: string | null): AgentRuntime {
   const normalized = value?.trim().toLowerCase();
+  if (normalized === 'claude') return 'claude';
   if (normalized === 'codex') return 'codex';
-  if (normalized === 'agy' || normalized === 'atg' || normalized === 'antigravity') return 'agy';
-  return 'claude';
+  return 'agy';
 }
 
 /**
  * Resolve a model identifier for the target runtime.
  *
- * Generated configs use abstract tiers ('high', 'standard') so they are not
- * tied to a single provider's concrete model names. Runtime-specific defaults
+ * Generated configs use abstract tiers ('high', 'standard', 'fast') so they are
+ * not tied to a single provider's concrete model names. Runtime-specific defaults
  * stay here, where operators can override them with env vars.
  */
-type ModelQuality = 'high' | 'standard';
+type ModelQuality = 'high' | 'standard' | 'fast';
 
 const ABSTRACT_MODEL_TIER: Record<string, ModelQuality> = {
   'high': 'high',
   'standard': 'standard',
+  'fast': 'fast',
 };
 
 const CLAUDE_MODEL_TIER: Record<string, ModelQuality> = {
@@ -89,14 +89,18 @@ const CLAUDE_MODEL_TIER: Record<string, ModelQuality> = {
   'claude-opus-4-6': 'high',
   'sonnet': 'standard',
   'claude-sonnet-4-6': 'standard',
-  'haiku': 'standard',
-  'claude-haiku-4-5': 'standard',
+  'haiku': 'fast',
+  'claude-haiku-4-5': 'fast',
 };
 
 const FALLBACK_RUNTIME_MODEL_DEFAULTS: Record<AgentRuntime, Record<ModelQuality, string>> = {
-  claude: { high: 'opus', standard: 'sonnet' },
-  codex: { high: 'gpt-5.4', standard: 'gpt-5.4' },
-  agy: { high: 'gemini-4-hydrogen-high', standard: 'gemini-4-carbon-medium' },
+  claude: { high: 'opus', standard: 'sonnet', fast: 'haiku' },
+  codex: { high: 'gpt-5.4', standard: 'gpt-5.4', fast: 'gpt-5.4' },
+  agy: {
+    high: 'gemini-4-hydrogen-high',
+    standard: 'gemini-4-carbon-medium',
+    fast: 'gemini-3.8-flash-low',
+  },
 };
 
 function envNonEmpty(key: string): string | undefined {

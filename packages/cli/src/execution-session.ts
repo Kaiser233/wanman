@@ -1,11 +1,14 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { execSync } from 'node:child_process'
-import type { AgentDefinition, AgentMatrixConfig, AgentRuntime } from '@wanman/core'
+import logUpdate from 'log-update'
+import type { AgentDefinition, AgentMatrixConfig } from '@wanman/core'
 import { normalizeRuntime, type ProjectRunSpec as BaseProjectRunSpec, type RunOptions } from '@wanman/host-sdk'
 import { Heartbeat, LoopEventBus, LoopLogger } from './loop-observability.js'
 import {
   type HealthAgent,
+  type HealthBudget,
+  type HealthWorktree,
   type RuntimeArtifact,
   type RuntimeClient,
   type TaskInfo,
@@ -13,8 +16,14 @@ import {
 import type { LocalSupervisorHandle } from './local-supervisor.js'
 import { createRunLaunchPlan, createRunSessionPlan } from './run-orchestrator.js'
 import { runLocalExecution } from './run-local-executor.js'
-import { renderDashboard, type DashboardState } from './tui/dashboard.js'
-import { countTransitions, classifyLoop, type LoopSnapshot, type LoopClassification } from './loop-classifier.js'
+import {
+  formatElapsed,
+  formatRunReport,
+  formatTokens,
+  renderDashboard,
+  type DashboardState,
+} from './tui/dashboard.js'
+import { countTransitions, type LoopSnapshot, type LoopClassification } from './loop-classifier.js'
 
 export type { HealthAgent, RuntimeClient, TaskInfo } from './runtime-client.js'
 export type { RunOptions } from '@wanman/host-sdk'
@@ -48,7 +57,6 @@ export interface ExecutionContext {
   spec: ProjectRunSpec
   runId: string
   workspaceRoot: string
-  brainName?: string
 }
 
 export interface PollExecutionContext extends ExecutionContext {
@@ -341,15 +349,6 @@ export function materializeLocalRunLayout(params: {
   }
 }
 
-function getDb9Token(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  if (env['DB9_TOKEN']) return env['DB9_TOKEN']
-  try {
-    return execSync('db9 token show 2>/dev/null', { encoding: 'utf-8' }).trim() || undefined
-  } catch {
-    return undefined
-  }
-}
-
 export function resolveSelectedConfigName(
   projectDir: string | null | undefined,
   opts: RunOptions,
@@ -374,24 +373,21 @@ export function getSelectedConfigText(
   return createDefaultLocalRunConfigText(opts)
 }
 
-function getRunOutputDir(outputDir: string, brainName?: string): string {
-  const dirName = brainName || `run-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`
+function getRunOutputDir(outputDir: string, runId?: string): string {
+  const dirName = runId || `run-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`
   return path.resolve(outputDir, dirName)
 }
 
-function exportBrainArtifacts(localDir: string, brainName?: string): void {
-  if (!brainName) return
+async function exportArtifacts(runtime: RuntimeClient, localDir: string): Promise<void> {
   try {
-    const out = execSync(
-      `db9 db sql $(db9 db list --json 2>/dev/null | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8'));const f=d.find(x=>x.name==='${brainName}');if(f)process.stdout.write(f.id)") -q "SELECT * FROM artifacts ORDER BY created_at" --json 2>/dev/null`,
-      { encoding: 'utf-8', timeout: 15_000 },
-    )
-    const artifactsPath = path.join(localDir, 'brain-artifacts.json')
-    fs.writeFileSync(artifactsPath, out)
-    const count = JSON.parse(out).length
-    console.log(`  Exported ${count} brain artifacts → brain-artifacts.json`)
+    const artifacts = await runtime.listArtifacts()
+    if (artifacts.length > 0) {
+      const artifactsPath = path.join(localDir, 'artifacts.json')
+      fs.writeFileSync(artifactsPath, JSON.stringify(artifacts, null, 2))
+      console.log(`  Saved ${artifacts.length} artifact group(s) → artifacts.json`)
+    }
   } catch {
-    // db might not exist
+    // supervisor might be down
   }
 }
 
@@ -413,10 +409,10 @@ export async function downloadLocalDeliverables(
   runtime: RuntimeClient,
   outputDir: string,
   workspaceRoot: string,
-  brainName?: string,
+  runId?: string,
 ): Promise<void> {
   console.log('\n  Downloading deliverables...')
-  const localDir = getRunOutputDir(outputDir, brainName)
+  const localDir = getRunOutputDir(outputDir, runId)
   const hasFiles = fs.existsSync(workspaceRoot)
     && execSync(`find '${workspaceRoot}' -type f 2>/dev/null | head -1`, { encoding: 'utf-8' }).trim()
 
@@ -433,7 +429,7 @@ export async function downloadLocalDeliverables(
   })
   const fileCount = execSync(`find '${localDir}' -type f | wc -l`, { encoding: 'utf-8' }).trim()
   console.log(`  Downloaded ${fileCount} files → ${localDir}`)
-  exportBrainArtifacts(localDir, brainName)
+  await exportArtifacts(runtime, localDir)
   await exportTasks(runtime, localDir)
 }
 
@@ -441,9 +437,9 @@ export async function downloadLocalDeliverables(
 export async function downloadLocalRepoPatch(
   outputDir: string,
   repoRoot: string,
-  brainName?: string,
+  runId?: string,
 ): Promise<void> {
-  const localDir = getRunOutputDir(outputDir, brainName)
+  const localDir = getRunOutputDir(outputDir, runId)
   fs.mkdirSync(localDir, { recursive: true })
 
   const status = execSync(`git -C '${repoRoot}' status --short`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
@@ -461,24 +457,6 @@ export async function downloadLocalRepoPatch(
     fs.writeFileSync(path.join(localDir, 'repo-staged.patch'), cachedDiff)
   }
   console.log(`  Exported repo patch → ${localDir}`)
-}
-
-async function recordRunInBrain(runId: string, goal: string, brainName?: string): Promise<void> {
-  if (!brainName) return
-  try {
-    const dbId = execSync(
-      `db9 --json db list 2>/dev/null | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8'));const f=d.find(x=>x.name==='${brainName}');if(f)process.stdout.write(f.id)"`,
-      { encoding: 'utf-8', timeout: 10_000 },
-    ).trim()
-    if (dbId) {
-      execSync(
-        `db9 db sql ${dbId} -q "INSERT INTO runs (id, goal, config) VALUES ('${runId}', '${goal.replace(/'/g, "''")}', '{}') ON CONFLICT (id) DO NOTHING" 2>/dev/null`,
-        { timeout: 10_000 },
-      )
-    }
-  } catch {
-    // best-effort
-  }
 }
 
 export function buildRunKickoffPayload(goal: string): string {
@@ -512,11 +490,10 @@ export async function observeExecutionBackend(params: {
   spec: ProjectRunSpec
   runId: string
   workspaceRoot: string
-  brainName?: string
   hooks?: ExecutionHooks
   shouldStop?: () => boolean
-}): Promise<{ finalLoop: number; finalTasks: TaskInfo[] }> {
-  const { backend, goal, opts, spec, runId, workspaceRoot, brainName, hooks } = params
+}): Promise<{ finalLoop: number; finalTasks: TaskInfo[]; haltReason?: string }> {
+  const { backend, goal, opts, spec, runId, workspaceRoot, hooks } = params
   const runtime = backend.runtime
 
   if (!hooks?.afterHealthy) {
@@ -532,7 +509,6 @@ export async function observeExecutionBackend(params: {
       spec,
       runId,
       workspaceRoot,
-      brainName,
     })
   }
 
@@ -550,8 +526,6 @@ export async function observeExecutionBackend(params: {
   const heartbeat = new Heartbeat(heartbeatPath, runId)
   heartbeat.start(10_000)
 
-  await recordRunInBrain(runId, goal, brainName)
-
   const startTime = Date.now()
   let logCursor = 0
   const logBuffer: string[] = []
@@ -561,15 +535,26 @@ export async function observeExecutionBackend(params: {
   let errorStreak = 0
   let prevTasks: TaskInfo[] = []
   let finalLoop = 0
+  let lastAgents: HealthAgent[] = []
+  let lastBudget: HealthBudget | undefined
+  let lastWorktrees: HealthWorktree[] | undefined
+  let haltReason: string | undefined
 
   for (let loop = 1; loop <= opts.loops; loop++) {
     finalLoop = loop
     if (params.shouldStop?.()) break
 
     let agents: HealthAgent[] = []
+    let budget: HealthBudget | undefined
+    let worktrees: HealthWorktree[] | undefined
     try {
       const health = await runtime.getHealth()
       agents = health.agents
+      budget = health.budget
+      worktrees = health.worktrees
+      lastAgents = agents
+      lastBudget = budget
+      lastWorktrees = worktrees
     } catch {
       // ignore
     }
@@ -582,31 +567,26 @@ export async function observeExecutionBackend(params: {
       if (logBuffer.length > maxLogLines * 2) logBuffer.splice(0, logBuffer.length - maxLogLines)
     }
 
-    let artifactSummary: RuntimeArtifact[] = []
-    if (brainName) {
-      try {
-        const out = execSync(
-          `db9 db sql $(db9 db list --json 2>/dev/null | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8'));const f=d.find(x=>x.name==='${brainName}');if(f)process.stdout.write(f.id)") -q "SELECT agent, kind, count(*) as cnt FROM artifacts GROUP BY agent, kind ORDER BY agent" --json 2>/dev/null`,
-          { encoding: 'utf-8', timeout: 10_000 },
-        )
-        artifactSummary = JSON.parse(out)
-      } catch {
-        // db might not exist yet
-      }
-    }
+    const artifactSummary: RuntimeArtifact[] = await runtime.listArtifacts().catch(() => [])
 
     const state: DashboardState = {
       goal,
       loop,
       maxLoops: opts.loops,
       elapsed: Date.now() - startTime,
-      brainName,
+      budget,
+      worktrees,
       agents,
       tasks,
       logs: logBuffer.slice(-maxLogLines),
       artifacts: artifactSummary,
     }
     renderDashboard(state)
+
+    if (budget?.halted) {
+      haltReason = budget.haltReason ?? 'budget_exceeded'
+      break
+    }
 
     if (hooks?.afterPoll || hooks?.shouldStop) {
       const pollContext: PollExecutionContext = {
@@ -617,7 +597,6 @@ export async function observeExecutionBackend(params: {
         spec,
         runId,
         workspaceRoot,
-        brainName,
         loop,
         startTime,
         agents,
@@ -727,8 +706,26 @@ export async function observeExecutionBackend(params: {
   heartbeat.stop()
   loopLogger.detach(eventBus)
   eventBus.removeAllListeners()
+  if (process.stdout.isTTY) logUpdate.clear()
 
-  console.log('\n  Run complete.')
+  const finalHealth = await runtime.getHealth().catch(() => undefined)
+  const finalAgents = finalHealth?.agents ?? lastAgents
+  const finalBudget = finalHealth?.budget ?? lastBudget
+  const finalWorktrees = finalHealth?.worktrees ?? lastWorktrees
+  if (!haltReason && finalBudget?.halted) {
+    haltReason = finalBudget.haltReason ?? 'budget_exceeded'
+  }
+  const finalTasks = await runtime.listTasks().catch(() => [])
+
+  console.log(formatRunReport({
+    goal,
+    elapsedMs: Date.now() - startTime,
+    haltReason,
+    budget: finalBudget,
+    agents: finalAgents,
+    tasks: finalTasks,
+    worktrees: finalWorktrees,
+  }))
 
   try {
     const lines = fs.readFileSync(path.join(opts.output, 'loop-events.ndjson'), 'utf-8').trim().split('\n')
@@ -746,7 +743,6 @@ export async function observeExecutionBackend(params: {
     // best-effort
   }
 
-  const finalTasks = await runtime.listTasks().catch(() => [])
   const tasksCreated = finalTasks.length
   const tasksDone = finalTasks.filter(task => task.status === 'done').length
   const completionRate = tasksCreated > 0 ? Math.round((tasksDone / tasksCreated) * 100) : 0
@@ -766,14 +762,16 @@ export async function observeExecutionBackend(params: {
       actualLoops: finalLoop,
       startTime: new Date(startTime).toISOString(),
       endTime: new Date().toISOString(),
-      brainName: brainName ?? null,
+      haltReason: haltReason ?? null,
+      totalTokens: finalBudget?.totalTokens ?? 0,
+      budget: finalBudget ?? null,
     }
     fs.writeFileSync(path.join(opts.output, 'meta.json'), JSON.stringify(meta, null, 2))
   } catch {
     // best-effort
   }
 
-  return { finalLoop, finalTasks }
+  return { finalLoop, finalTasks, ...(haltReason ? { haltReason } : {}) }
 }
 
 export async function runExecutionSession(
@@ -793,7 +791,6 @@ export async function runExecutionSession(
 
   if (root) loadEnvFile(root, hostEnv)
 
-  const db9Token = opts.noBrain ? undefined : getDb9Token(hostEnv)
   const configName = resolveSelectedConfigName(projectDir, opts)
   const configText = getSelectedConfigText(projectDir, opts)
   const sessionPlan = createRunSessionPlan({
@@ -803,11 +800,9 @@ export async function runExecutionSession(
     configName,
     configText,
     standalone,
-    db9Token,
     env: hostEnv,
   })
   const {
-    brainName,
     runId,
     runtimeOverride,
     codexConfigLabel,
@@ -816,19 +811,24 @@ export async function runExecutionSession(
     llmModeLabel,
   } = sessionPlan
   const sourceLabel = spec.sourceLabel ?? sessionPlan.sourceLabel
+  const tokenCapLabel = opts.maxTokens > 0 ? `${formatTokens(opts.maxTokens)} tok` : '∞ tok'
+  const durCapLabel = opts.maxDurationSec > 0 ? formatElapsed(opts.maxDurationSec * 1000) : '∞'
+  const budgetLabel = `${tokenCapLabel} / ${durCapLabel}`
+  const worktreeLabel = opts.worktreeIsolation ? 'isolated per worker' : 'shared'
 
   console.log(`
   ┌─────────────────────────────────────────────────┐
   │  wanman run                                     │
   ├─────────────────────────────────────────────────┤
-  │  Goal:   ${goal.slice(0, 40).padEnd(40)}│
-  │  Loops:  ${(opts.infinite ? '∞ (infinite)' : String(opts.loops)).padEnd(40)}│
-  │  Config: ${configName.padEnd(40)}│
-  │  Source: ${sourceLabel.padEnd(40)}│
-  │  Brain:  ${(brainName ?? 'disabled').padEnd(40)}│
-  │  Runtime:${runtimeLabel.padEnd(40)}│
-  │  LLM:    ${llmModeLabel.padEnd(40)}│
-${codexConfigLabel ? `  │  Codex:  ${codexConfigLabel.padEnd(40)}│\n` : ''}${agyConfigLabel ? `  │  Agy:    ${agyConfigLabel.padEnd(40)}│\n` : ''}  └─────────────────────────────────────────────────┘
+  │  Goal:     ${goal.slice(0, 38).padEnd(38)}│
+  │  Loops:    ${(opts.infinite ? '∞ (infinite)' : String(opts.loops)).padEnd(38)}│
+  │  Config:   ${configName.slice(0, 38).padEnd(38)}│
+  │  Source:   ${sourceLabel.slice(0, 38).padEnd(38)}│
+  │  Runtime:  ${runtimeLabel.slice(0, 38).padEnd(38)}│
+  │  LLM:      ${llmModeLabel.slice(0, 38).padEnd(38)}│
+  │  Budget:   ${budgetLabel.slice(0, 38).padEnd(38)}│
+  │  Worktree: ${worktreeLabel.slice(0, 38).padEnd(38)}│
+${codexConfigLabel ? `  │  Codex:    ${codexConfigLabel.slice(0, 38).padEnd(38)}│\n` : ''}${agyConfigLabel ? `  │  Agy:      ${agyConfigLabel.slice(0, 38).padEnd(38)}│\n` : ''}  └─────────────────────────────────────────────────┘
 `)
 
   if (root) {
@@ -861,7 +861,6 @@ ${codexConfigLabel ? `  │  Codex:  ${codexConfigLabel.padEnd(40)}│\n` : ''}$
       ...(opts.agyModel ? { agyModel: opts.agyModel } : {}),
       ...(opts.agyEffort ? { agyEffort: opts.agyEffort } : {}),
     },
-    brainName,
     hooks,
     observeExecution: observeExecutionBackend,
     downloadDeliverables: downloadLocalDeliverables,

@@ -2,11 +2,15 @@ import type { AgentRuntime } from '@wanman/core'
 
 export type AgyEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
+export const DEFAULT_MAX_TOKENS = 1_000_000
+export const DEFAULT_MAX_DURATION_SEC = 3600
+export const DEFAULT_SPAWN_TIMEOUT_SEC = 600
+
 export function normalizeRuntime(value?: string | null): AgentRuntime {
   const normalized = value?.trim().toLowerCase()
+  if (normalized === 'claude') return 'claude'
   if (normalized === 'codex') return 'codex'
-  if (normalized === 'agy' || normalized === 'atg' || normalized === 'antigravity') return 'agy'
-  return 'claude'
+  return 'agy'
 }
 
 export interface RunOptions {
@@ -22,7 +26,16 @@ export interface RunOptions {
   workerUrl?: string
   workerModel?: string
   workerKey?: string
-  noBrain: boolean
+  /** Global run token budget across all agents (0 = unlimited) */
+  maxTokens: number
+  /** Per-agent cumulative token budget (0 = unlimited) */
+  agentMaxTokens: number
+  /** Global wall-clock duration budget in seconds (0 = unlimited) */
+  maxDurationSec: number
+  /** Per-spawn execution timeout in seconds (0 = unlimited) */
+  spawnTimeoutSec: number
+  /** Isolate code-writing workers into dedicated git worktrees & branches */
+  worktreeIsolation: boolean
   keep: boolean
   output: string
   infinite: boolean
@@ -43,7 +56,11 @@ export function createDefaultRunOptions(): RunOptions {
     workerUrl: undefined,
     workerModel: undefined,
     workerKey: 'lmstudio',
-    noBrain: false,
+    maxTokens: DEFAULT_MAX_TOKENS,
+    agentMaxTokens: 0,
+    maxDurationSec: DEFAULT_MAX_DURATION_SEC,
+    spawnTimeoutSec: DEFAULT_SPAWN_TIMEOUT_SEC,
+    worktreeIsolation: false,
     keep: false,
     output: './deliverables',
     infinite: false,
@@ -70,6 +87,7 @@ export function createTakeoverRunOptions(overrides: Partial<RunOptions> = {}): R
   return createRunOptions({
     infinite: true,
     loops: Infinity,
+    worktreeIsolation: true,
     ...overrides,
   })
 }

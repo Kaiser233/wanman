@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createDefaultRunOptions } from '@wanman/host-sdk'
 import type { LocalRunExecutorParams } from './run-local-executor.js'
 
 const execSyncMock = vi.hoisted(() => vi.fn(() => ''))
@@ -16,9 +17,13 @@ vi.mock('./run-local-executor.js', () => ({
   runLocalExecution: runLocalExecutionMock,
 }))
 
-vi.mock('./tui/dashboard.js', () => ({
-  renderDashboard: renderDashboardMock,
-}))
+vi.mock('./tui/dashboard.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('./tui/dashboard.js')>()
+  return {
+    ...actual,
+    renderDashboard: renderDashboardMock,
+  }
+})
 
 import { observeExecutionBackend, runExecutionSession } from './execution-session.js'
 
@@ -61,6 +66,7 @@ describe('runExecutionSession', () => {
           loop: { runId: params.runId },
         }),
         listTasks: vi.fn(async () => taskStates.shift() ?? taskStates.at(-1) ?? []),
+        listArtifacts: vi.fn().mockResolvedValue([]),
         sendMessage: vi.fn().mockResolvedValue(undefined),
       }
       const backend = {
@@ -78,7 +84,6 @@ describe('runExecutionSession', () => {
         spec: params.spec,
         runId: params.runId,
         workspaceRoot: params.localLayout.workspaceRoot,
-        brainName: params.brainName,
         hooks: params.hooks,
         shouldStop: () => false,
       })
@@ -91,11 +96,11 @@ describe('runExecutionSession', () => {
     })
 
     await runExecutionSession('Ship the open source run path', {
+      ...createDefaultRunOptions(),
       loops: 2,
       pollInterval: 0,
       output,
       keep: false,
-      noBrain: true,
       infinite: false,
       errorLimit: 3,
       runtime: 'codex',
@@ -116,7 +121,6 @@ describe('runExecutionSession', () => {
       codexModel: 'gpt-test',
       codexReasoningEffort: 'high',
     })
-    expect(capturedParams?.brainName).toBeUndefined()
     expect(capturedParams?.localLayout.configPath.endsWith('agents.json')).toBe(true)
     expect(fs.existsSync(capturedParams!.localLayout.configPath)).toBe(true)
 
@@ -157,6 +161,7 @@ describe('runExecutionSession', () => {
         listTasks: vi.fn().mockResolvedValue([
           { id: '1', title: 'Task', status: 'done', assignee: 'dev', priority: 1 },
         ]),
+        listArtifacts: vi.fn().mockResolvedValue([]),
       }
 
       await params.downloadDeliverables(runtime as never, params.opts.output, params.localLayout.workspaceRoot)
@@ -164,11 +169,11 @@ describe('runExecutionSession', () => {
     })
 
     await runExecutionSession('Export run output', {
+      ...createDefaultRunOptions(),
       loops: 1,
       pollInterval: 0,
       output,
       keep: false,
-      noBrain: true,
       infinite: false,
       errorLimit: 3,
     }, {}, {
@@ -193,11 +198,12 @@ describe('runExecutionSession', () => {
     const runtime = {
       getHealth: vi.fn()
         .mockResolvedValueOnce({ agents: [{ name: 'ceo', state: 'running', lifecycle: '24/7' }] })
-        .mockResolvedValueOnce({ agents: [{ name: 'ceo', state: 'idle', lifecycle: '24/7' }] }),
+        .mockResolvedValue({ agents: [{ name: 'ceo', state: 'idle', lifecycle: '24/7' }] }),
       listTasks: vi.fn()
         .mockResolvedValueOnce([taskTodo])
         .mockResolvedValueOnce([taskDone])
         .mockResolvedValue([taskDone]),
+      listArtifacts: vi.fn().mockResolvedValue([]),
       sendMessage: vi.fn(),
     }
     const backend = {
@@ -215,11 +221,11 @@ describe('runExecutionSession', () => {
       backend: backend as never,
       goal: 'Observe hooks',
       opts: {
+        ...createDefaultRunOptions(),
         loops: 5,
         pollInterval: 0,
         output,
         keep: false,
-        noBrain: true,
         infinite: false,
         errorLimit: 3,
       },
@@ -240,12 +246,61 @@ describe('runExecutionSession', () => {
     expect(JSON.parse(fs.readFileSync(path.join(output, 'meta.json'), 'utf-8')).actualLoops).toBe(2)
   })
 
+  it('exits immediately and records haltReason in meta.json when budget circuit breaker trips', async () => {
+    const output = makeTmpDir()
+    const runtime = {
+      getHealth: vi.fn().mockResolvedValue({
+        agents: [{ name: 'ceo', state: 'stopped', lifecycle: '24/7', totalTokens: 1200, haltedReason: 'token_budget_exceeded' }],
+        budget: {
+          totalTokens: 1200,
+          tokenBudget: 1000,
+          elapsedMs: 5000,
+          maxDurationMs: 3600000,
+          halted: true,
+          haltReason: 'token_budget_exceeded',
+        },
+      }),
+      listTasks: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn().mockResolvedValue([]),
+      sendMessage: vi.fn().mockResolvedValue(undefined),
+    }
+    const backend = {
+      runtime,
+      readLogs: vi.fn(async (cursor: number) => ({ lines: [], cursor })),
+    }
+
+    const result = await observeExecutionBackend({
+      backend: backend as never,
+      goal: 'Budget halt test',
+      opts: {
+        ...createDefaultRunOptions(),
+        loops: 10,
+        pollInterval: 0,
+        output,
+        maxTokens: 1000,
+      },
+      spec: {},
+      runId: 'run-halt',
+      workspaceRoot: '/tmp/workspace',
+    })
+
+    expect(result.finalLoop).toBe(1)
+    expect(result.haltReason).toBe('token_budget_exceeded')
+    const meta = JSON.parse(fs.readFileSync(path.join(output, 'meta.json'), 'utf-8')) as {
+      haltReason: string
+      totalTokens: number
+    }
+    expect(meta.haltReason).toBe('token_budget_exceeded')
+    expect(meta.totalTokens).toBe(1200)
+  })
+
   it('stops after completed tasks stay idle for the done observation window', async () => {
     const output = makeTmpDir()
     const doneTask = { id: '1', title: 'Done', status: 'done', assignee: 'dev' }
     const runtime = {
       getHealth: vi.fn().mockResolvedValue({ agents: [{ name: 'ceo', state: 'idle', lifecycle: '24/7' }] }),
       listTasks: vi.fn().mockResolvedValue([doneTask]),
+      listArtifacts: vi.fn().mockResolvedValue([]),
       sendMessage: vi.fn(),
     }
     const backend = {
@@ -257,11 +312,11 @@ describe('runExecutionSession', () => {
       backend: backend as never,
       goal: 'Finish',
       opts: {
+        ...createDefaultRunOptions(),
         loops: 20,
         pollInterval: 0,
         output,
         keep: false,
-        noBrain: true,
         infinite: false,
         errorLimit: 3,
       },
@@ -283,11 +338,11 @@ describe('runExecutionSession', () => {
     })
 
     await runExecutionSession('Build with agy', {
+      ...createDefaultRunOptions(),
       loops: 1,
       pollInterval: 0,
       output,
       keep: false,
-      noBrain: true,
       infinite: false,
       errorLimit: 3,
       runtime: 'agy',

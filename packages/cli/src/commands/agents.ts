@@ -14,7 +14,12 @@ interface AgentInfo {
   name: string;
   state: string;
   lifecycle: string;
+  runtime?: string;
   model: string;
+  currentTool?: string;
+  totalTokens?: number;
+  branch?: string;
+  haltedReason?: string;
 }
 
 export async function agentsCommand(args?: string[]): Promise<void> {
@@ -43,10 +48,17 @@ export async function agentsCommand(args?: string[]): Promise<void> {
   }
 
   console.log('Agent Matrix:');
-  console.log('─'.repeat(50));
+  console.log('─'.repeat(72));
   for (const agent of agents) {
     const stateIcon = agent.state === 'running' ? '*' : agent.state === 'idle' ? '-' : 'x';
-    console.log(`  ${stateIcon} ${agent.name.padEnd(15)} ${agent.state.padEnd(10)} ${agent.lifecycle.padEnd(10)} ${agent.model}`);
+    const runtimeModel = agent.runtime ? `${agent.runtime}/${agent.model}` : agent.model;
+    const extras: string[] = [];
+    if (agent.currentTool) extras.push(`tool:${agent.currentTool}`);
+    if (agent.totalTokens && agent.totalTokens > 0) extras.push(`${agent.totalTokens} tok`);
+    if (agent.branch) extras.push(`[${agent.branch}]`);
+    if (agent.haltedReason) extras.push(`halted:${agent.haltedReason}`);
+    const suffix = extras.length > 0 ? `  ${extras.join(' ')}` : '';
+    console.log(`  ${stateIcon} ${agent.name.padEnd(15)} ${agent.state.padEnd(10)} ${agent.lifecycle.padEnd(11)} ${runtimeModel}${suffix}`);
   }
 }
 

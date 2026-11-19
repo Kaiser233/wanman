@@ -21,6 +21,11 @@ export interface LocalSupervisorOptions {
   codexReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   agyModel?: string
   agyEffort?: AgyEffort
+  maxTokens?: number
+  agentMaxTokens?: number
+  maxDurationSec?: number
+  spawnTimeoutSec?: number
+  worktreeIsolation?: boolean
   /** @internal test/embedded override; defaults to the built runtime entrypoint. */
   runtimeEntrypoint?: string
   /** @internal test/embedded override; defaults to the current CLI entrypoint. */
@@ -268,6 +273,11 @@ export function buildLocalSupervisorEnv(
     ...(opts.codexReasoningEffort ? { WANMAN_CODEX_REASONING_EFFORT: opts.codexReasoningEffort } : {}),
     ...(opts.agyModel ? { WANMAN_AGY_MODEL: opts.agyModel } : {}),
     ...(opts.agyEffort ? { WANMAN_AGY_EFFORT: opts.agyEffort } : {}),
+    ...(opts.maxTokens !== undefined ? { WANMAN_TOKEN_BUDGET: String(opts.maxTokens) } : {}),
+    ...(opts.agentMaxTokens !== undefined && opts.agentMaxTokens > 0 ? { WANMAN_AGENT_TOKEN_BUDGET: String(opts.agentMaxTokens) } : {}),
+    ...(opts.maxDurationSec !== undefined ? { WANMAN_MAX_DURATION_MS: String(opts.maxDurationSec * 1000) } : {}),
+    ...(opts.spawnTimeoutSec !== undefined ? { WANMAN_TIME_BUDGET_MS: String(opts.spawnTimeoutSec * 1000) } : {}),
+    ...(opts.worktreeIsolation !== undefined ? { WANMAN_WORKTREE_ISOLATION: opts.worktreeIsolation ? '1' : '0' } : {}),
     ...(agyBin ? { WANMAN_AGY_BIN: agyBin } : {}),
   }
 }

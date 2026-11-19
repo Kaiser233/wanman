@@ -20,7 +20,10 @@ import type {
   JsonRpcRequest,
   JsonRpcResponse,
   ExternalEvent,
+  HealthAgentInfo,
+  HealthBudgetInfo,
   HealthResponse,
+  HealthWorktreeInfo,
   AgentSendParams,
   AgentRecvParams,
   ContextGetParams,
@@ -47,13 +50,12 @@ import type {
 import { RPC_METHODS, RPC_ERRORS, createRpcResponse, createRpcError } from '@wanman/core';
 import { MessageStore } from './message-store.js';
 import { ContextStore } from './context-store.js';
+import { ArtifactStore } from './artifact-store.js';
 import { Relay } from './relay.js';
 import { buildEnrichedPrompt } from './config.js';
 import { AgentProcess } from './agent-process.js';
 import { CronScheduler } from './cron-scheduler.js';
 import { type CredentialManager } from './credential-manager.js';
-import { BrainManager } from './brain-manager.js';
-import { esc, escJson, SAFE_IDENT, SAFE_PATH } from './sql-escape.js';
 import { LoopEventBus } from './loop-event-bus.js';
 import { generatePreamble } from './preamble.js';
 import type {
@@ -61,6 +63,7 @@ import type {
   PreambleProvider,
   RunCompleteCallback,
   RunCompleteInfo,
+  TokenUsageCallback,
 } from './agent-process.js';
 import { TokenTracker } from './token-tracker.js';
 import { SkillManager } from './skill-manager.js';
@@ -68,12 +71,13 @@ import { AuthManager, isAuthProviderName } from './auth-manager.js';
 import { TaskPool, type Task } from './task-pool.js';
 import { InitiativeBoard } from './initiative-board.js';
 import { ChangeCapsulePool } from './change-capsule-pool.js';
+import { WorktreeManager, type WorktreeInfo } from './worktree-manager.js';
 import { createHttpServer } from './http-server.js';
 import { createLogger } from './logger.js';
 import type * as http from 'http';
 import { resolveMaybePromise, type ContextBackend, type MessageTransport } from './runtime-contracts.js';
 import type { AgentMessage } from '@wanman/core';
-import { resolveAgentRuntime } from './agent-adapter.js';
+import { resolveAgentRuntime, resolveModel } from './agent-adapter.js';
 import {
   SharedSkillManager,
   type ActivationSnapshotRecord,
@@ -82,79 +86,22 @@ import { AgentHomeManager } from './agent-home-manager.js';
 
 const log = createLogger('supervisor');
 
-function postStorySyncEvent(event: {
-  event_type: string;
-  classification?: string;
-  agent?: string;
-  payload?: unknown;
-}): void {
-  const syncUrl = process.env['WANMAN_SYNC_URL'];
-  const syncSecret = process.env['WANMAN_SYNC_SECRET'];
-  const syncStoryId = process.env['WANMAN_STORY_ID'];
-  if (!syncUrl || !syncStoryId) return;
+const SAFE_IDENT = /^[a-zA-Z0-9_-]{1,64}$/;
+const SAFE_PATH = /^[a-zA-Z0-9/_.-]{1,256}$/;
 
-  fetch(`${syncUrl}/event`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Story-Id': syncStoryId,
-      ...(syncSecret ? { 'X-Sync-Secret': syncSecret } : {}),
-    },
-    body: JSON.stringify(event),
-    signal: AbortSignal.timeout(5_000),
-  }).catch(() => {});
+function parsePositiveIntEnv(key: string): number | undefined {
+  const raw = process.env[key]?.trim();
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function isHumanConversationTarget(name: string | null | undefined): boolean {
   return typeof name === 'string' && name.trim().toLowerCase() === 'human';
 }
 
-function inferHumanMessageType(payload: unknown, priority: 'steer' | 'normal'): 'decision' | 'blocker' {
-  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-    const record = payload as Record<string, unknown>;
-    if (record.blocked === true) return 'blocker';
-    if (record.kind === 'blocker' || record.kind === 'access_request') return 'blocker';
-  }
-
-  if (priority === 'steer') return 'blocker';
-  return 'decision';
-}
-
-function normalizeThreadSyncMessageType(
-  to: string,
-  type: string | undefined,
-  payload: unknown,
-  priority: 'steer' | 'normal',
-): string {
-  const normalizedType = typeof type === 'string' && type.trim() ? type.trim() : 'message';
-  if (normalizedType !== 'message') return normalizedType;
-  if (!isHumanConversationTarget(to)) return normalizedType;
-  return inferHumanMessageType(payload, priority);
-}
-
-function postStorySyncArtifact(artifact: {
-  id?: string;
-  agent?: string;
-  kind: string;
-  path: string;
-  content?: string | null;
-  metadata?: Record<string, unknown>;
-}): void {
-  const syncUrl = process.env['WANMAN_SYNC_URL'];
-  const syncSecret = process.env['WANMAN_SYNC_SECRET'];
-  const syncStoryId = process.env['WANMAN_STORY_ID'];
-  if (!syncUrl || !syncStoryId) return;
-
-  fetch(`${syncUrl}/artifact`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Story-Id': syncStoryId,
-      ...(syncSecret ? { 'X-Sync-Secret': syncSecret } : {}),
-    },
-    body: JSON.stringify(artifact),
-    signal: AbortSignal.timeout(5_000),
-  }).catch(() => {});
+function isWorktreeEligibleAgent(name: string): boolean {
+  return /^(dev|devops|worker)(-\d+)?$/.test(name);
 }
 
 export interface SupervisorOptions {
@@ -170,15 +117,17 @@ export class Supervisor {
   private db!: Database.Database;
   private messageStore!: MessageStore;
   private contextStore!: ContextBackend;
+  private artifactStore!: ArtifactStore;
   private relay!: MessageTransport;
   private agents: Map<string, AgentProcess> = new Map();
   /** Names of dynamically spawned agents (for cleanup tracking) */
   private dynamicAgents: Set<string> = new Set();
-  private brainManager: BrainManager | null = null;
   private authManager: AuthManager;
   private taskPool!: TaskPool;
   private initiativeBoard!: InitiativeBoard;
   private capsulePool!: ChangeCapsulePool;
+  private worktreeManager: WorktreeManager | null = null;
+  private agentWorktrees = new Map<string, WorktreeInfo>();
   private cronScheduler!: CronScheduler;
   private httpServer: http.Server | null = null;
   /** Loop-level event bus for observability */
@@ -199,22 +148,30 @@ export class Supervisor {
   private completedRuns = 0;
   /** Per-agent completed run counts */
   private completedRunsByAgent = new Map<string, number>();
+  /** Global circuit breaker state */
+  private _halted = false;
+  private _haltReason?: 'token_budget_exceeded' | 'duration_budget_exceeded';
+  private durationTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: AgentMatrixConfig, options?: SupervisorOptions) {
     this.config = config;
     this.credentialManager = options?.credentialManager;
     this.headless = options?.headless ?? false;
     this.authManager = new AuthManager();
-    // TaskPool is initialized lazily — needs SQLite DB which may not exist yet
-
-    if (config.brain) {
-      this.brainManager = new BrainManager(config.brain);
-    }
 
     this.initSqlite(config);
     this.wireSteerCallback();
     this.initCronScheduler();
   }
+
+  /** True if the run has been halted by a global token or duration circuit breaker. */
+  get isHalted(): boolean { return this._halted }
+
+  /** Reason the run was halted by a circuit breaker, if any. */
+  get haltReason(): 'token_budget_exceeded' | 'duration_budget_exceeded' | undefined { return this._haltReason }
+
+  /** Active per-agent git worktree assignments. */
+  get worktrees(): Map<string, WorktreeInfo> { return this.agentWorktrees }
 
   /** Public accessor for the loop event bus (null until initEventBus is called) */
   get eventBus(): LoopEventBus | null { return this._eventBus }
@@ -275,45 +232,145 @@ export class Supervisor {
    */
   private tokenBudgetAgentsStopped = new Set<string>();
 
-  private enforceTokenBudget(agentName: string): void {
-    if (this.tokenBudgetAgentsStopped.has(agentName)) return;
+  private resolveGlobalTokenBudget(): number {
+    if (this.config.tokenBudget !== undefined) {
+      return this.config.tokenBudget > 0 ? this.config.tokenBudget : 0;
+    }
+    return parsePositiveIntEnv('WANMAN_TOKEN_BUDGET') ?? 0;
+  }
 
-    const raw = process.env['WANMAN_AGENT_TOKEN_BUDGET'];
-    if (!raw) return;
-    const budget = parseInt(raw, 10);
-    if (!Number.isFinite(budget) || budget <= 0) return;
+  private resolveAgentTokenBudget(): number {
+    if (this.config.agentTokenBudget !== undefined) {
+      return this.config.agentTokenBudget > 0 ? this.config.agentTokenBudget : 0;
+    }
+    return parsePositiveIntEnv('WANMAN_AGENT_TOKEN_BUDGET') ?? 0;
+  }
+
+  private resolveMaxDurationMs(): number {
+    if (this.config.maxDurationMs !== undefined) {
+      return this.config.maxDurationMs > 0 ? this.config.maxDurationMs : 0;
+    }
+    return parsePositiveIntEnv('WANMAN_MAX_DURATION_MS') ?? 0;
+  }
+
+  private resolveSpawnTimeoutMs(): number | undefined {
+    if (this.config.spawnTimeoutMs !== undefined) {
+      return this.config.spawnTimeoutMs > 0 ? this.config.spawnTimeoutMs : undefined;
+    }
+    return parsePositiveIntEnv('WANMAN_TIME_BUDGET_MS');
+  }
+
+  /**
+   * Immediately halt all agents due to a global token or duration circuit breaker.
+   */
+  haltAll(reason: 'token_budget_exceeded' | 'duration_budget_exceeded'): void {
+    if (this._halted) return;
+    this._halted = true;
+    this._haltReason = reason;
+
+    if (this.durationTimer) {
+      clearTimeout(this.durationTimer);
+      this.durationTimer = null;
+    }
+    if (this.cronScheduler) {
+      this.cronScheduler.stop();
+    }
 
     const runId = this._eventBus?.runId ?? 'unknown';
     const usage = this._tokenTracker.getUsage(runId);
-    const agentTotal = usage.byAgent[agentName] ?? 0;
-    if (agentTotal < budget) return;
+    const tokenBudget = this.resolveGlobalTokenBudget() || null;
+    const maxDurationMs = this.resolveMaxDurationMs() || null;
+    const elapsedMs = Date.now() - this.startedAt;
 
-    const agent = this.agents.get(agentName);
-    log.warn('agent token budget exceeded — stopping', {
-      agent: agentName, agentTotal, budget,
+    log.warn('circuit breaker tripped — halting all agents', {
+      reason,
+      totalTokens: usage.total,
+      tokenBudget,
+      elapsedMs,
+      maxDurationMs,
     });
-    try {
-      agent?.stop();
-      const released = this.taskPool.releaseByAssignee(agentName);
-      if (released > 0) {
-        log.info('released claimed tasks after budget stop', { agent: agentName, count: released });
+
+    for (const [name, agent] of this.agents) {
+      try {
+        if (typeof agent.markHalted === 'function') {
+          agent.markHalted(reason);
+        } else {
+          agent.stop();
+        }
+        this.taskPool.releaseByAssignee(name);
+      } catch (err) {
+        log.warn('failed to halt agent', {
+          agent: name,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
-      this._eventBus?.emit({
-        type: 'agent.budget_exceeded',
-        runId,
-        loop: this._eventBus?.currentLoop ?? 0,
-        agent: agentName,
-        tokens: agentTotal,
-        budget,
-        timestamp: new Date().toISOString(),
-      });
-    } catch (err) {
-      log.warn('failed to stop agent after budget exceeded', {
-        agent: agentName,
-        error: err instanceof Error ? err.message : String(err),
-      });
     }
-    this.tokenBudgetAgentsStopped.add(agentName);
+
+    this._eventBus?.emit({
+      type: 'run.halted',
+      runId,
+      loop: this._eventBus?.currentLoop ?? 0,
+      reason,
+      totalTokens: usage.total,
+      tokenBudget,
+      elapsedMs,
+      maxDurationMs,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  private enforceTokenBudget(agentName: string): void {
+    const runId = this._eventBus?.runId ?? 'unknown';
+    const usage = this._tokenTracker.getUsage(runId);
+
+    const agentBudget = this.resolveAgentTokenBudget();
+    if (agentBudget > 0 && !this.tokenBudgetAgentsStopped.has(agentName)) {
+      const agentTotal = usage.byAgent[agentName] ?? 0;
+      if (agentTotal >= agentBudget) {
+        const agent = this.agents.get(agentName);
+        log.warn('agent token budget exceeded — stopping', {
+          agent: agentName, agentTotal, budget: agentBudget,
+        });
+        try {
+          if (agent && typeof agent.markHalted === 'function') {
+            agent.markHalted('agent_token_budget_exceeded');
+          } else {
+            agent?.stop();
+          }
+          const released = this.taskPool.releaseByAssignee(agentName);
+          if (released > 0) {
+            log.info('released claimed tasks after budget stop', { agent: agentName, count: released });
+          }
+          this._eventBus?.emit({
+            type: 'agent.budget_exceeded',
+            runId,
+            loop: this._eventBus?.currentLoop ?? 0,
+            agent: agentName,
+            tokens: agentTotal,
+            budget: agentBudget,
+            timestamp: new Date().toISOString(),
+          });
+        } catch (err) {
+          log.warn('failed to stop agent after budget exceeded', {
+            agent: agentName,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        this.tokenBudgetAgentsStopped.add(agentName);
+      }
+    }
+
+    const globalBudget = this.resolveGlobalTokenBudget();
+    if (globalBudget > 0 && usage.total >= globalBudget) {
+      this.haltAll('token_budget_exceeded');
+    }
+  }
+
+  private buildTokenUsageCallback(): TokenUsageCallback {
+    return (agentName, delta) => {
+      this.recordTokenUsage(agentName, delta);
+      this.enforceTokenBudget(agentName);
+    };
   }
 
   /** Record token usage and update context store for CEO budget awareness */
@@ -340,10 +397,10 @@ export class Supervisor {
       timestamp: Date.now(),
     })
 
-    // Update context store so CEO can query via `wanman context get token_budget`
+    // Update context store so CEO can query via `wanman context get token_usage`
     try {
       const summary = this._tokenTracker.getUsage(runId)
-      const budget = parseInt(process.env['WANMAN_TOKEN_BUDGET'] || '0', 10)
+      const budget = this.resolveGlobalTokenBudget()
       const budgetCheck = budget > 0 ? this._tokenTracker.checkBudget(runId, budget) : null
 
       if (this.contextStore && 'set' in this.contextStore) {
@@ -376,6 +433,7 @@ export class Supervisor {
     return async (agentName: string): Promise<string | undefined> => {
       try {
         const tasks = this.taskPool?.listSync() ?? [];
+        const wt = this.agentWorktrees.get(agentName);
         const preamble = generatePreamble({
           agentName,
           tasks,
@@ -383,6 +441,7 @@ export class Supervisor {
           loopNumber: this._eventBus?.currentLoop ?? 0,
           uptimeSeconds: Math.floor((Date.now() - this.startedAt) / 1000),
           runId: this._eventBus?.runId,
+          ...(wt ? { worktreePath: wt.path, branch: wt.branch } : {}),
         });
         const snapshot = await this.getOrCreateActivationSnapshot(agentName);
         if (!snapshot || snapshot.resolvedSkills.length === 0) {
@@ -446,7 +505,7 @@ ${activePaths}`;
     }
   }
 
-  /** Build a run-complete callback that writes feedback to db9 */
+  /** Build a run-complete callback that updates metrics and checks budgets */
   private buildRunCompleteCallback(): RunCompleteCallback {
     return (info: RunCompleteInfo) => {
       try {
@@ -456,58 +515,17 @@ ${activePaths}`;
           (this.completedRunsByAgent.get(info.agentName) ?? 0) + 1,
         );
 
-        // Record actual runtime-reported token usage for supervisor metrics.
-        this.recordTokenUsage(info.agentName, {
-          inputTokens: info.inputTokens,
-          outputTokens: info.outputTokens,
-          totalTokens: info.totalTokens,
-        })
-
-        // Per-agent token budget enforcement. Reads WANMAN_AGENT_TOKEN_BUDGET (a
-        // total-tokens integer); when an agent crosses it we stop the AgentProcess
-        // and release its claimed tasks so other agents can pick them up.
-        this.enforceTokenBudget(info.agentName);
-
-        // Write run_feedback to db9
-        if (this.brainManager?.isInitialized) {
-          const runId = this._eventBus?.runId ?? 'unknown'
-          const loop = this._eventBus?.currentLoop ?? 0
-          const tokenCount = info.totalTokens
-          const attributedTask = this.getAttributableTaskForAgent(info.agentName)
-          const snapshot = this.activeSnapshotByAgent.get(info.agentName)
-          const sql = `INSERT INTO run_feedback (
-            run_id,
-            agent,
-            task_completed,
-            duration_ms,
-            token_count,
-            errored,
-            steer_count,
-            loop_number,
-            task_id,
-            execution_profile,
-            bundle_id,
-            bundle_version,
-            activation_snapshot_id
-          ) VALUES (
-            '${esc(runId)}',
-            '${esc(info.agentName)}',
-            ${!info.errored},
-            ${info.durationMs},
-            ${tokenCount},
-            ${info.errored},
-            ${info.steerCount},
-            ${loop},
-            ${sqlStringOrNull(attributedTask?.id)},
-            ${sqlStringOrNull(attributedTask?.executionProfile)},
-            ${sqlStringOrNull(snapshot?.bundleId)},
-            ${snapshot?.bundleVersion ?? 'NULL'},
-            ${sqlStringOrNull(snapshot?.id)}
-          )`
-          this.brainManager.executeSQL(sql).catch(err => {
-            log.warn('Failed to write run_feedback', { agent: info.agentName, error: String(err) })
+        // Live runs stream deltas via onTokenUsage; only record here when
+        // tokens were not streamed live (e.g. direct callback tests).
+        if (!info.tokensReportedLive && info.totalTokens > 0) {
+          this.recordTokenUsage(info.agentName, {
+            inputTokens: info.inputTokens,
+            outputTokens: info.outputTokens,
+            totalTokens: info.totalTokens,
           })
         }
+
+        this.enforceTokenBudget(info.agentName);
 
         log.info('run complete', {
           agent: info.agentName,
@@ -515,6 +533,7 @@ ${activePaths}`;
           durationMs: info.durationMs,
           errored: info.errored,
           steerCount: info.steerCount,
+          totalTokens: info.totalTokens,
         })
       } catch {
         // Non-fatal: feedback recording should never prevent agent operation
@@ -522,33 +541,64 @@ ${activePaths}`;
     }
   }
 
+  private isGitRepository(dir: string): boolean {
+    try {
+      execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private resolveWorktreesDir(gitRoot: string): string {
+    const dbPath = this.config.dbPath;
+    if (dbPath && dbPath !== ':memory:') {
+      const dbDir = path.dirname(dbPath);
+      if (path.basename(dbDir) === '.wanman' || dbDir.includes('.wanman-local')) {
+        return path.join(dbDir, 'worktrees');
+      }
+    }
+    return path.join(gitRoot, '.worktrees');
+  }
+
+  private async ensureAgentWorktree(agentName: string): Promise<WorktreeInfo | null> {
+    if (!this.worktreeManager || !isWorktreeEligibleAgent(agentName)) {
+      return null;
+    }
+    try {
+      const wt = await this.worktreeManager.ensure(agentName, undefined, agentName);
+      this.agentWorktrees.set(agentName, wt);
+      log.info('assigned isolated worktree', { agent: agentName, branch: wt.branch, path: wt.path });
+      return wt;
+    } catch (err) {
+      log.warn('failed to assign isolated worktree', {
+        agent: agentName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
   /**
    * Dynamically spawn a clone of an existing agent role.
-   *
-   * Creates a new AgentProcess with the same CLAUDE.md, model, and skills
-   * as the template agent, but with a unique name (e.g. feedback-2).
-   * The clone runs as on-demand — it starts idle and is triggered by messages.
    */
-  async spawnDynamicAgent(templateName: string, cloneName?: string): Promise<{ name: string } | { error: string }> {
-    // Find the template agent definition
+  async spawnDynamicAgent(templateName: string, cloneName?: string): Promise<{ name: string; branch?: string; worktreePath?: string } | { error: string }> {
     const templateDef = this.config.agents.find(a => a.name === templateName)
     if (!templateDef) {
       return { error: `Template agent '${templateName}' not found in config` }
     }
 
-    // Generate clone name if not provided
     const name = cloneName || `${templateName}-${this.dynamicAgents.size + 2}`
     if (this.agents.has(name)) {
       return { error: `Agent '${name}' already exists` }
     }
 
-    // Create clone definition — always on-demand (temporary workers)
     const cloneDef: import('@wanman/core').AgentDefinition = {
       ...templateDef,
       name,
       lifecycle: 'on-demand' as const,
-      crons: undefined, // no cron for clones
-      events: undefined, // no event subscriptions
+      crons: undefined,
+      events: undefined,
     }
 
     const workspaceRoot = this.config.workspaceRoot || '/workspace/agents'
@@ -563,8 +613,12 @@ ${activePaths}`;
       }
     }
     fs.mkdirSync(path.join(workDir, 'output'), { recursive: true })
-    const brainEnv = this.brainManager?.env ?? {}
-    const agentEnv: Record<string, string> = { ...brainEnv, WANMAN_AGENT_NAME: name }
+
+    const worktree = await this.ensureAgentWorktree(name)
+    const agentEnv: Record<string, string> = {
+      WANMAN_AGENT_NAME: name,
+      ...(worktree ? { WANMAN_AGENT_WORKTREE: worktree.path, WANMAN_AGENT_BRANCH: worktree.branch } : {}),
+    }
     if (templateDef.baseUrl) agentEnv['ANTHROPIC_BASE_URL'] = templateDef.baseUrl
     if (templateDef.apiKey) agentEnv['ANTHROPIC_AUTH_TOKEN'] = templateDef.apiKey
 
@@ -572,7 +626,8 @@ ${activePaths}`;
     const preambleProvider = this.buildPreambleProvider()
     const envProvider = this.buildEnvProvider()
     const onRunComplete = this.buildRunCompleteCallback()
-    const timeBudgetMs = parseInt(process.env['WANMAN_TIME_BUDGET_MS'] || '0', 10) || undefined
+    const onTokenUsage = this.buildTokenUsageCallback()
+    const timeBudgetMs = this.resolveSpawnTimeoutMs()
 
     const agentProc = new AgentProcess(
       cloneDef, this.relay, workDir,
@@ -580,18 +635,28 @@ ${activePaths}`;
       preambleProvider, onRunComplete, timeBudgetMs,
       (agentName) => this.hasAutonomousWork(agentName),
       envProvider,
+      onTokenUsage,
     )
+    if (worktree && typeof agentProc.setWorktreeInfo === 'function') {
+      agentProc.setWorktreeInfo({ branch: worktree.branch, path: worktree.path })
+    }
 
     this.agents.set(name, agentProc)
     this.dynamicAgents.add(name)
 
-    // Start the agent (on-demand → goes to idle, waiting for messages)
     agentProc.start().catch(err => {
       log.error('dynamic agent start failed', { name, error: String(err) })
     })
 
-    log.info('spawned dynamic agent', { name, template: templateName })
-    return { name }
+    log.info('spawned dynamic agent', {
+      name,
+      template: templateName,
+      ...(worktree ? { branch: worktree.branch, worktreePath: worktree.path } : {}),
+    })
+    return {
+      name,
+      ...(worktree ? { branch: worktree.branch, worktreePath: worktree.path } : {}),
+    }
   }
 
   /** Destroy a dynamically spawned agent */
@@ -607,6 +672,24 @@ ${activePaths}`;
         log.info('released claimed tasks on agent destroy', { agent: name, count: released })
       }
       this.agents.delete(name)
+    }
+    const wt = this.agentWorktrees.get(name)
+    if (wt && this.worktreeManager) {
+      if (this.worktreeManager.hasUnmergedOrDirtyChanges(wt.name)) {
+        log.info('preserving dynamic agent worktree with unmerged or dirty changes', {
+          agent: name,
+          branch: wt.branch,
+          path: wt.path,
+        })
+      } else {
+        await this.worktreeManager.remove(wt.name).catch(err => {
+          log.warn('failed to remove clean dynamic worktree', {
+            agent: name,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        })
+        this.agentWorktrees.delete(name)
+      }
     }
     this.dynamicAgents.delete(name)
     log.info('destroyed dynamic agent', { name })
@@ -631,12 +714,13 @@ ${activePaths}`;
     return db;
   }
 
-  /** Initialize SQLite-based stores (existing behavior). */
+  /** Initialize SQLite-based stores (local-only). */
   private initSqlite(config: AgentMatrixConfig): void {
     const dbPath = config.dbPath || '/tmp/wanman.db';
     this.db = this.openDatabase(dbPath);
     this.messageStore = new MessageStore(this.db);
     this.contextStore = new ContextStore(this.db);
+    this.artifactStore = new ArtifactStore(this.db);
     this.relay = new Relay(this.messageStore);
     this.taskPool = new TaskPool(this.db);
     this.initiativeBoard = new InitiativeBoard(this.db);
@@ -709,11 +793,6 @@ ${activePaths}`;
     const gitRoot = this.config.gitRoot || process.env['WANMAN_GIT_ROOT']
       || workspaceRoot.replace(/\/agents\/?$/, '') || workspaceRoot;
 
-    // Initialize Brain (before creating agent processes)
-    if (this.brainManager) {
-      await this.brainManager.initialize();
-    }
-
     // Auto-initialize EventBus if not already set up externally
     if (!this._eventBus) {
       const runId = `run-${Date.now().toString(36)}`
@@ -721,22 +800,16 @@ ${activePaths}`;
       log.info('auto-initialized event bus', { runId })
     }
 
-    // Initialize Skill Manager
+    // Initialize local Skill Managers
     this._skillManager = new SkillManager(
-      this.brainManager,
       `${workspaceRoot}/../packages/core/agents`,
     );
     const sharedSkillsDir = process.env['WANMAN_SHARED_SKILLS'] || '/opt/wanman/shared-skills'
-    this._sharedSkillManager = new SharedSkillManager(this.brainManager, sharedSkillsDir)
-    await this._sharedSkillManager.syncFilesystemSkills()
-    const agentUser = process.env['WANMAN_AGENT_USER']
-    const baseHome = agentUser ? `/home/${agentUser}` : (process.env['HOME'] || '/root')
+    this._sharedSkillManager = new SharedSkillManager(sharedSkillsDir)
+    const baseHome = process.env['HOME'] || os.homedir() || '/root'
     const runId = this._eventBus?.runId ?? 'unknown'
     // Include pid + per-instance random suffix so parallel supervisors (e.g.
-    // vitest file-level parallelism) never share a homesRoot. Without this,
-    // two test files that start a Supervisor in the same millisecond collide
-    // on `/tmp/wanman-agent-homes/<runId>/__startup_probe__/.claude/...` and
-    // fail with EEXIST when the probe symlinks are rebuilt.
+    // vitest file-level parallelism) never share a homesRoot.
     const homesRoot = path.join(
       os.tmpdir(),
       'wanman-agent-homes',
@@ -748,17 +821,27 @@ ${activePaths}`;
     // Initialize git repo in workspace (idempotent)
     this.initWorkspaceGit(gitRoot, workspaceRoot);
 
-    const brainEnv = this.brainManager?.env ?? {};
+    // Initialize per-worker Git WorktreeManager when worktree isolation is enabled
+    if (this.config.worktreeIsolation && this.isGitRepository(gitRoot)) {
+      const worktreesDir = this.resolveWorktreesDir(gitRoot);
+      this.worktreeManager = new WorktreeManager(gitRoot, worktreesDir);
+      log.info('worktree isolation enabled', { gitRoot, worktreesDir });
+    }
 
     // Create agent processes
+    const timeBudgetMs = this.resolveSpawnTimeoutMs();
     for (const def of this.config.agents) {
       const workDir = `${workspaceRoot}/${def.name}`;
       // Goal is available to all agents: CEO uses it for orchestration, workers for business context
       const goal = this.config.goal || process.env['WANMAN_GOAL'] || undefined;
-      const agentEnv: Record<string, string> = { ...brainEnv, WANMAN_AGENT_NAME: def.name };
+      const worktree = await this.ensureAgentWorktree(def.name);
+      const agentEnv: Record<string, string> = {
+        WANMAN_AGENT_NAME: def.name,
+        ...(worktree ? { WANMAN_AGENT_WORKTREE: worktree.path, WANMAN_AGENT_BRANCH: worktree.branch } : {}),
+      };
       const runtime = resolveAgentRuntime(def);
       // Per-agent LLM endpoint override (hybrid model routing)
-      log.info('agent config', { agent: def.name, baseUrl: def.baseUrl ?? '(none)', apiKey: def.apiKey ? '***' : '(none)' });
+      log.info('agent config', { agent: def.name, runtime, baseUrl: def.baseUrl ?? '(none)', apiKey: def.apiKey ? '***' : '(none)' });
       if (def.baseUrl) agentEnv['ANTHROPIC_BASE_URL'] = def.baseUrl;
       if (def.apiKey) agentEnv['ANTHROPIC_AUTH_TOKEN'] = def.apiKey;
       // We enrich prompts whenever the agent is not relying on the default Claude Code
@@ -770,13 +853,10 @@ ${activePaths}`;
       const agentDef = shouldEnrichPrompt
         ? { ...def, systemPrompt: buildEnrichedPrompt(def, workspaceRoot, this.config.agents, goal) }
         : def;
-      // Preamble provider: generates context summary on agent respawn
       const preambleProvider = this.buildPreambleProvider();
       const envProvider = this.buildEnvProvider();
-      // Run complete callback: records feedback to db9 for skill evolution
       const onRunComplete = this.buildRunCompleteCallback();
-      // Time budget per agent spawn (env: WANMAN_TIME_BUDGET_MS, or per-agent config)
-      const timeBudgetMs = parseInt(process.env['WANMAN_TIME_BUDGET_MS'] || '0', 10) || undefined;
+      const onTokenUsage = this.buildTokenUsageCallback();
       const agentProc = new AgentProcess(
         agentDef,
         this.relay,
@@ -789,7 +869,11 @@ ${activePaths}`;
         timeBudgetMs,
         (agentName) => this.hasAutonomousWork(agentName),
         envProvider,
+        onTokenUsage,
       );
+      if (worktree && typeof agentProc.setWorktreeInfo === 'function') {
+        agentProc.setWorktreeInfo({ branch: worktree.branch, path: worktree.path });
+      }
       this.agents.set(def.name, agentProc);
     }
 
@@ -804,6 +888,16 @@ ${activePaths}`;
     if (this.headless) {
       log.info('headless mode — skipping agent processes and cron jobs');
       return;
+    }
+
+    // Start wall-clock duration circuit breaker if configured
+    const maxDurationMs = this.resolveMaxDurationMs();
+    if (maxDurationMs > 0) {
+      this.durationTimer = setTimeout(() => {
+        this.haltAll('duration_budget_exceeded');
+      }, maxDurationMs);
+      this.durationTimer.unref?.();
+      log.info('duration circuit breaker armed', { maxDurationMs });
     }
 
     // Register cron jobs from agent definitions
@@ -848,7 +942,6 @@ ${activePaths}`;
         const sender = (from as string) || 'external';
         const messagePriority = (priority as 'steer' | 'normal') || 'normal';
         const messageType = typeof type === 'string' && type.trim() ? type : 'message';
-        const syncMessageType = normalizeThreadSyncMessageType(to, messageType, payload, messagePriority);
 
         // Validate target agent exists
         if (!this.hasKnownAgent(to) && !isHumanConversationTarget(to)) {
@@ -864,19 +957,6 @@ ${activePaths}`;
               messagePriority,
             );
 
-        postStorySyncEvent({
-          event_type: 'thread',
-          classification: messagePriority,
-          agent: sender,
-          payload: {
-            from: sender,
-            to,
-            type: syncMessageType,
-            payload,
-            priority: messagePriority,
-          },
-        });
-
         return createRpcResponse(req.id, { id, status: 'queued' });
       }
 
@@ -890,12 +970,7 @@ ${activePaths}`;
       }
 
       case RPC_METHODS.AGENT_LIST: {
-        const agents = Array.from(this.agents.entries()).map(([name, proc]) => ({
-          name,
-          state: proc.state,
-          lifecycle: proc.definition.lifecycle,
-          model: proc.definition.model,
-        }));
+        const agents = Array.from(this.agents.entries()).map(([name, proc]) => this.buildAgentTelemetry(name, proc));
         return createRpcResponse(req.id, { agents });
       }
 
@@ -1148,22 +1223,6 @@ ${activePaths}`;
           }
         }
 
-        // POST task update to external sync hook (best-effort)
-        if (updatedTask) {
-          postStorySyncEvent({
-            event_type: 'task',
-            classification: updatedTask.status,
-            agent: updatedTask.assignee,
-            payload: {
-              id: updatedTask.id,
-              title: updatedTask.title,
-              status: updatedTask.status,
-              assignee: updatedTask.assignee,
-              result: updatedTask.result,
-            },
-          });
-        }
-
         return createRpcResponse(req.id, updatedTask);
       }
 
@@ -1397,13 +1456,10 @@ ${activePaths}`;
         return createRpcResponse(req.id, { capsules });
       }
 
-      // ── Artifacts ──
+      // ── Artifacts (local SQLite) ──
 
       case RPC_METHODS.ARTIFACT_PUT: {
-        if (!this.brainManager?.isInitialized) {
-          return createRpcError(req.id, RPC_ERRORS.INTERNAL_ERROR, 'Brain not initialized — artifact storage unavailable');
-        }
-        const { kind, agent, source, confidence, taskId, path, content, metadata } = params as unknown as ArtifactPutParams;
+        const { kind, agent, source, confidence, path: artifactPath, content, metadata } = params as unknown as ArtifactPutParams;
         if (!kind || !agent || !source || confidence === undefined) {
           return createRpcError(req.id, RPC_ERRORS.INVALID_PARAMS, 'Missing required: kind, agent, source, confidence');
         }
@@ -1416,20 +1472,18 @@ ${activePaths}`;
         if (!SAFE_IDENT.test(kind)) {
           return createRpcError(req.id, RPC_ERRORS.INVALID_PARAMS, `invalid kind "${kind}": must match ${SAFE_IDENT}`);
         }
-        if (path && !SAFE_PATH.test(path)) {
-          return createRpcError(req.id, RPC_ERRORS.INVALID_PARAMS, `invalid path "${path}": must match ${SAFE_PATH}`);
+        if (artifactPath && !SAFE_PATH.test(artifactPath)) {
+          return createRpcError(req.id, RPC_ERRORS.INVALID_PARAMS, `invalid path "${artifactPath}": must match ${SAFE_PATH}`);
         }
         const fullMetadata = { ...metadata, source, confidence, verified: false };
-        // agent/kind/path are whitelist-validated above; esc() is kept as defence-in-depth.
-        // metadata is escaped with escJson so that JSON escape sequences (e.g. \n) survive
-        // the jsonb parser (esc() would double the leading backslash and corrupt them).
-        const sql = `INSERT INTO artifacts (agent, kind, path, content, metadata) VALUES ('${esc(agent)}', '${esc(kind)}', ${path ? `'${esc(path)}'` : 'NULL'}, ${content ? `'${esc(content)}'` : 'NULL'}, '${escJson(JSON.stringify(fullMetadata))}'::jsonb) RETURNING id, agent, kind, created_at`;
         try {
-          const result = await this.brainManager.executeSQL(sql);
-          const insertedArtifact = Array.isArray(result) && result.length > 0 && result[0] && typeof result[0] === 'object'
-            ? result[0] as { id?: string | number }
-            : null;
-          // Emit artifact.created event for observability
+          const inserted = this.artifactStore.put({
+            agent,
+            kind,
+            path: artifactPath,
+            content,
+            metadata: fullMetadata,
+          });
           if (this._eventBus) {
             this._eventBus.emit({
               type: 'artifact.created',
@@ -1437,29 +1491,17 @@ ${activePaths}`;
               loop: this._eventBus.currentLoop,
               agent,
               kind,
-              path: path || undefined,
+              path: artifactPath || undefined,
               timestamp: new Date().toISOString(),
             });
           }
-          // POST to external sync hook (best-effort)
-          postStorySyncArtifact({
-            id: String(insertedArtifact?.id ?? Date.now()),
-            agent,
-            kind,
-            path: path ?? `${kind}/${agent}`,
-            content,
-            metadata: fullMetadata,
-          });
-          return createRpcResponse(req.id, result);
+          return createRpcResponse(req.id, [inserted]);
         } catch (err) {
           return createRpcError(req.id, RPC_ERRORS.INTERNAL_ERROR, `Artifact insert failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
       case RPC_METHODS.ARTIFACT_LIST: {
-        if (!this.brainManager?.isInitialized) {
-          return createRpcError(req.id, RPC_ERRORS.INTERNAL_ERROR, 'Brain not initialized');
-        }
         const { agent: filterAgent, kind: filterKind, verified } = params as unknown as ArtifactListParams;
         if (filterAgent && !SAFE_IDENT.test(filterAgent)) {
           return createRpcError(req.id, RPC_ERRORS.INVALID_PARAMS, `invalid agent filter "${filterAgent}"`);
@@ -1467,129 +1509,29 @@ ${activePaths}`;
         if (filterKind && !SAFE_IDENT.test(filterKind)) {
           return createRpcError(req.id, RPC_ERRORS.INVALID_PARAMS, `invalid kind filter "${filterKind}"`);
         }
-        const conditions: string[] = [];
-        if (filterAgent) conditions.push(`agent = '${esc(filterAgent)}'`);
-        if (filterKind) conditions.push(`kind = '${esc(filterKind)}'`);
-        if (verified !== undefined) conditions.push(`metadata->>'verified' = '${String(verified) === 'true' ? 'true' : 'false'}'`);
-        const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-        const sql = `SELECT id, agent, kind, path, length(content) as content_length, metadata, created_at FROM artifacts ${where} ORDER BY created_at DESC LIMIT 100`;
         try {
-          const result = await this.brainManager.executeSQL(sql);
-          return createRpcResponse(req.id, result);
+          const rows = this.artifactStore.list({
+            agent: filterAgent,
+            kind: filterKind,
+            ...(verified !== undefined ? { verified: String(verified) === 'true' } : {}),
+          });
+          return createRpcResponse(req.id, rows);
         } catch (err) {
           return createRpcError(req.id, RPC_ERRORS.INTERNAL_ERROR, `Artifact list failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
       case RPC_METHODS.ARTIFACT_GET: {
-        if (!this.brainManager?.isInitialized) {
-          return createRpcError(req.id, RPC_ERRORS.INTERNAL_ERROR, 'Brain not initialized');
-        }
         const { id: artifactId } = params as unknown as { id: number };
         const parsedArtifactId = parseInt(String(artifactId), 10);
         if (artifactId === undefined || artifactId === null || isNaN(parsedArtifactId)) {
           return createRpcError(req.id, RPC_ERRORS.INVALID_PARAMS, 'Missing or invalid required: id (must be a number)');
         }
-        const sql = `SELECT id, agent, kind, path, content, metadata, created_at FROM artifacts WHERE id = ${parsedArtifactId}`;
         try {
-          const result = await this.brainManager.executeSQL(sql);
-          return createRpcResponse(req.id, result);
+          const rows = this.artifactStore.get(parsedArtifactId);
+          return createRpcResponse(req.id, rows);
         } catch (err) {
           return createRpcError(req.id, RPC_ERRORS.INTERNAL_ERROR, `Artifact get failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-
-      // ── Hypotheses ──
-
-      case RPC_METHODS.HYPOTHESIS_CREATE: {
-        if (!this.brainManager?.isInitialized) {
-          return createRpcError(req.id, RPC_ERRORS.INTERNAL_ERROR, 'Brain not initialized');
-        }
-        const { title, agent: hAgent, rationale, expectedValue, estimatedCost, parentId } = params as {
-          title: string; agent: string; rationale?: string; expectedValue?: string; estimatedCost?: string; parentId?: number;
-        };
-        if (!title) {
-          return createRpcError(req.id, RPC_ERRORS.INVALID_PARAMS, 'Missing required: title');
-        }
-        const effectiveAgent = hAgent || 'ceo';
-        if (!SAFE_IDENT.test(effectiveAgent)) {
-          return createRpcError(req.id, RPC_ERRORS.INVALID_PARAMS, `invalid agent "${effectiveAgent}"`);
-        }
-        const cols = ['agent', 'title'];
-        const vals = [`'${esc(effectiveAgent)}'`, `'${esc(title)}'`];
-        if (rationale) { cols.push('rationale'); vals.push(`'${esc(rationale)}'`); }
-        if (expectedValue) { cols.push('expected_value'); vals.push(`'${esc(expectedValue)}'`); }
-        if (estimatedCost) { cols.push('estimated_cost'); vals.push(`'${esc(estimatedCost)}'`); }
-        if (parentId) { cols.push('parent_id'); vals.push(String(parseInt(String(parentId), 10))); }
-        const sql = `INSERT INTO hypotheses (${cols.join(', ')}) VALUES (${vals.join(', ')}) RETURNING id, title, status, created_at`;
-        try {
-          const result = await this.brainManager.executeSQL(sql);
-          return createRpcResponse(req.id, result);
-        } catch (err) {
-          return createRpcError(req.id, RPC_ERRORS.INTERNAL_ERROR, `Hypothesis create failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-
-      case RPC_METHODS.HYPOTHESIS_LIST: {
-        if (!this.brainManager?.isInitialized) {
-          return createRpcError(req.id, RPC_ERRORS.INTERNAL_ERROR, 'Brain not initialized');
-        }
-        const { status: hStatus, treeRoot } = params as { status?: string; treeRoot?: number };
-        let sql: string;
-        const parsedTreeRoot = treeRoot ? parseInt(String(treeRoot), 10) : NaN;
-        if (treeRoot && !isNaN(parsedTreeRoot)) {
-          // Recursive tree query from a root
-          sql = `WITH RECURSIVE tree AS (
-            SELECT * FROM hypotheses WHERE id = ${parsedTreeRoot}
-            UNION ALL
-            SELECT h.* FROM hypotheses h JOIN tree t ON h.parent_id = t.id
-          ) SELECT id, parent_id, agent, title, rationale, expected_value, estimated_cost, status, outcome, created_at, resolved_at FROM tree ORDER BY id`;
-        } else {
-          if (hStatus && !SAFE_IDENT.test(hStatus)) {
-            return createRpcError(req.id, RPC_ERRORS.INVALID_PARAMS, `invalid status "${hStatus}"`);
-          }
-          const conditions: string[] = [];
-          if (hStatus) conditions.push(`status = '${esc(hStatus)}'`);
-          const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-          sql = `SELECT id, parent_id, agent, title, rationale, expected_value, estimated_cost, status, outcome, created_at, resolved_at FROM hypotheses ${where} ORDER BY created_at DESC LIMIT 100`;
-        }
-        try {
-          const result = await this.brainManager.executeSQL(sql);
-          return createRpcResponse(req.id, result);
-        } catch (err) {
-          return createRpcError(req.id, RPC_ERRORS.INTERNAL_ERROR, `Hypothesis list failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-
-      case RPC_METHODS.HYPOTHESIS_UPDATE: {
-        if (!this.brainManager?.isInitialized) {
-          return createRpcError(req.id, RPC_ERRORS.INTERNAL_ERROR, 'Brain not initialized');
-        }
-        const { id: hId, status: newStatus, outcome: hOutcome, evidence } = params as {
-          id: number; status: string; outcome?: string; evidence?: number[];
-        };
-        const parsedHId = parseInt(String(hId), 10);
-        if (hId === undefined || hId === null || isNaN(parsedHId)) {
-          return createRpcError(req.id, RPC_ERRORS.INVALID_PARAMS, 'Missing or invalid required: id (must be a number)');
-        }
-        if (!newStatus) {
-          return createRpcError(req.id, RPC_ERRORS.INVALID_PARAMS, 'Missing required: status');
-        }
-        if (!SAFE_IDENT.test(newStatus)) {
-          return createRpcError(req.id, RPC_ERRORS.INVALID_PARAMS, `invalid status "${newStatus}"`);
-        }
-        const sets = [`status = '${esc(newStatus)}'`];
-        if (hOutcome) sets.push(`outcome = '${esc(hOutcome)}'`);
-        if (evidence) sets.push(`evidence_artifact_ids = ARRAY[${evidence.map(e => parseInt(String(e), 10)).join(',')}]`);
-        if (['validated', 'rejected', 'abandoned'].includes(newStatus)) {
-          sets.push(`resolved_at = now()`);
-        }
-        const sql = `UPDATE hypotheses SET ${sets.join(', ')} WHERE id = ${parsedHId} RETURNING id, status, resolved_at`;
-        try {
-          const result = await this.brainManager.executeSQL(sql);
-          return createRpcResponse(req.id, result);
-        } catch (err) {
-          return createRpcError(req.id, RPC_ERRORS.INTERNAL_ERROR, `Hypothesis update failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
@@ -1807,11 +1749,6 @@ ${activePaths}`;
         execSync('git config user.name "wanman agents"', { cwd: wsRoot, stdio: 'pipe' });
         execSync('git add -A', { cwd: wsRoot, stdio: 'pipe' });
         execSync('git commit -m "init: workspace initialized" --allow-empty', { cwd: wsRoot, stdio: 'pipe' });
-        // Fix .git ownership so agent user can run git commands
-        const agentUser = process.env['WANMAN_AGENT_USER'];
-        if (agentUser && process.getuid?.() === 0) {
-          execSync(`chown -R ${agentUser}:${agentUser} ${wsRoot}`, { stdio: 'pipe' });
-        }
         log.info('workspace git initialized', { path: wsRoot });
       } catch (err) {
         log.warn('workspace git init failed', { error: err instanceof Error ? err.message : String(err) });
@@ -1924,15 +1861,65 @@ ${activePaths}`;
     }
   }
 
+  private buildAgentTelemetry(name: string, proc: AgentProcess): HealthAgentInfo {
+    const runtime = proc.runtime ?? resolveAgentRuntime(proc.definition);
+    const model = proc.resolvedModel ?? resolveModel(proc.definition.model, runtime);
+    const runId = this._eventBus?.runId ?? 'unknown';
+    const trackerTotal = this._tokenTracker.getUsage(runId).byAgent[name] ?? 0;
+    const procUsage = proc.totalUsage;
+    const totalTokens = Math.max(procUsage?.totalTokens ?? 0, trackerTotal);
+    const wt = this.agentWorktrees.get(name);
+    const branch = proc.branch ?? wt?.branch;
+    const worktreePath = proc.worktreePath ?? wt?.path;
+
+    return {
+      name,
+      state: proc.state,
+      lifecycle: proc.definition.lifecycle,
+      runtime,
+      model,
+      ...(proc.currentTool ? { currentTool: proc.currentTool } : {}),
+      inputTokens: procUsage?.inputTokens ?? 0,
+      outputTokens: procUsage?.outputTokens ?? 0,
+      totalTokens,
+      ...(branch ? { branch } : {}),
+      ...(worktreePath ? { worktreePath } : {}),
+      ...(proc.haltedReason ? { haltedReason: proc.haltedReason } : {}),
+    };
+  }
+
   /** Get health status. */
   getHealth(): HealthResponse & { loop?: unknown; runtime?: unknown } {
+    const runId = this._eventBus?.runId ?? 'unknown';
+    const usage = this._tokenTracker.getUsage(runId);
+    const tokenBudget = this.resolveGlobalTokenBudget();
+    const agentTokenBudget = this.resolveAgentTokenBudget();
+    const maxDurationMs = this.resolveMaxDurationMs();
+    const spawnTimeoutMs = this.resolveSpawnTimeoutMs();
+
+    const budget: HealthBudgetInfo = {
+      totalTokens: usage.total,
+      tokenBudget: tokenBudget > 0 ? tokenBudget : null,
+      agentTokenBudget: agentTokenBudget > 0 ? agentTokenBudget : null,
+      elapsedMs: Date.now() - this.startedAt,
+      maxDurationMs: maxDurationMs > 0 ? maxDurationMs : null,
+      spawnTimeoutMs: spawnTimeoutMs ?? null,
+      halted: this._halted,
+      ...(this._haltReason ? { haltReason: this._haltReason } : {}),
+    };
+
+    const worktrees: HealthWorktreeInfo[] = Array.from(this.agentWorktrees.entries()).map(([agent, wt]) => ({
+      agent,
+      name: wt.name,
+      path: wt.path,
+      branch: wt.branch,
+    }));
+
     const health: HealthResponse & { loop?: unknown; runtime?: unknown } = {
       status: 'ok',
-      agents: Array.from(this.agents.entries()).map(([name, proc]) => ({
-        name,
-        state: proc.state,
-        lifecycle: proc.definition.lifecycle,
-      })),
+      agents: Array.from(this.agents.entries()).map(([name, proc]) => this.buildAgentTelemetry(name, proc)),
+      budget,
+      ...(worktrees.length > 0 ? { worktrees } : {}),
       timestamp: new Date().toISOString(),
     };
 
@@ -1959,6 +1946,11 @@ ${activePaths}`;
   /** Graceful shutdown. */
   async shutdown(): Promise<void> {
     log.info('shutting down...');
+
+    if (this.durationTimer) {
+      clearTimeout(this.durationTimer);
+      this.durationTimer = null;
+    }
 
     // Stop cron scheduler (may not be initialized if start() failed)
     if (this.cronScheduler) {
@@ -2002,8 +1994,4 @@ ${activePaths}`;
 
     log.info('shutdown complete');
   }
-}
-
-function sqlStringOrNull(value: string | undefined): string {
-  return value ? `'${esc(value)}'` : 'NULL'
 }

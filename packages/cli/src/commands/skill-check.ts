@@ -11,7 +11,7 @@ import * as path from 'node:path'
 /** Known wanman CLI commands (top-level) */
 export const KNOWN_COMMANDS = new Set([
   'send', 'recv', 'agents', 'context', 'escalate',
-  'task', 'initiative', 'capsule', 'artifact', 'hypothesis', 'run', 'takeover',
+  'task', 'initiative', 'capsule', 'artifact', 'run', 'takeover',
 ])
 
 /** Known subcommands per top-level command */
@@ -20,7 +20,6 @@ export const KNOWN_SUBCOMMANDS: Record<string, Set<string>> = {
   initiative: new Set(['create', 'list', 'get', 'update']),
   capsule: new Set(['create', 'list', 'mine', 'get', 'update']),
   artifact: new Set(['put', 'list', 'get']),
-  hypothesis: new Set(['create', 'list', 'update']),
   context: new Set(['get', 'set']),
 }
 

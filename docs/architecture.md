@@ -161,17 +161,16 @@ interface ContextEntry {
 
 RPC methods: `context.get`, `context.set`, `context.list`. `set` is an upsert (`INSERT ... ON CONFLICT DO UPDATE`).
 
-## 5. Task pool, initiatives, artifacts, hypotheses
+## 5. Task pool, initiatives, artifacts, capsules
 
 The supervisor also owns structured state beyond raw messages:
 
 - **TaskPool** — agent-owned tasks with status (`pending`, `in_progress`, `done`, `blocked`), priorities, and `--after` dependencies. `wanman task list` renders a dependency-aware view.
 - **InitiativeBoard** — longer-lived multi-task initiatives.
-- **ArtifactStore** — structured outputs (research summaries, plans, etc.) produced via `wanman artifact put`. Artifacts have kind, path, content, and JSON metadata.
-- **HypothesisPool** — experiment-style hypotheses with status transitions.
+- **ArtifactStore** — structured outputs (research summaries, plans, etc.) persisted locally in SQLite via `wanman artifact put`. Artifacts have kind, path, content, and JSON metadata.
 - **ChangeCapsulePool** — proposed change bundles agents can review.
 
-All of these are just SQLite tables under a single `wanman.db`, reachable via JSON-RPC.
+All of these are SQLite tables under a single local `wanman.db`, reachable via JSON-RPC.
 
 ## 6. External events & cron
 
@@ -184,19 +183,19 @@ These are the two seams where wanman plugs into "the rest of your infrastructure
 
 ## 7. Runtime adapters
 
-Each agent child is a Claude Code, Codex, or Antigravity (`agy`) subprocess. The supervisor selects between them via `WANMAN_RUNTIME` (`claude` default, `codex`, or `agy` with aliases `atg` / `antigravity`) and a per-agent override if present.
+Each agent child is an Antigravity (`agy`), Claude Code, or Codex subprocess. The supervisor selects between them via `WANMAN_RUNTIME` (`agy` default with aliases `atg` / `antigravity`, `claude`, or `codex`) and a per-agent override if present.
 
+- `agy-adapter.ts` — targets Antigravity CLI (`agy --input-format stream-json --output-format stream-json --dangerously-skip-permissions`), resolving the binary via `WANMAN_AGY_BIN`, `PATH`, or `~/.local/bin/agy`. Maps abstract tiers `high` / `standard` / `fast` to `gemini-4-hydrogen-high` / `gemini-4-carbon-medium` / `gemini-3.8-flash-low` by default, controlled by `WANMAN_AGY_MODEL`, `WANMAN_AGY_HIGH_MODEL`, `WANMAN_AGY_STANDARD_MODEL`, `WANMAN_AGY_FAST_MODEL`, and `WANMAN_AGY_EFFORT` (`low|medium|high|xhigh|max`), with `AGY_CLI_DISABLE_AUTO_UPDATE=true` and `AGY_CLI_HIDE_LOGO=true` set automatically.
 - `claude-adapter.ts` / `claude-code.ts` — spawns `claude` with the agent's system prompt, injects skill files, streams structured events back to the supervisor.
 - `codex-adapter.ts` — same shape, targeting `@openai/codex`. `WANMAN_CODEX_MODEL` and `WANMAN_CODEX_REASONING_EFFORT` control model selection.
-- `agy-adapter.ts` — targets Antigravity CLI (`agy --input-format stream-json --output-format stream-json --dangerously-skip-permissions`), resolving the binary via `WANMAN_AGY_BIN`, `PATH`, or `~/.local/bin/agy`. Controlled by `WANMAN_AGY_MODEL`, `WANMAN_AGY_HIGH_MODEL`, `WANMAN_AGY_STANDARD_MODEL`, and `WANMAN_AGY_EFFORT` (`low|medium|high|xhigh|max`), with `AGY_CLI_DISABLE_AUTO_UPDATE=true` and `AGY_CLI_HIDE_LOGO=true` set automatically.
 
 All adapters emit the same `AgentRunEvent` stream, so the supervisor and CLI don't care which is running. Adding a new adapter is a matter of implementing that event contract and registering it in `agent-adapter.ts` / `agent-process.ts`.
 
 ## 8. Worktree and home isolation
 
-Before spawning the first child, the supervisor sets up, per agent:
+Before spawning workers, the supervisor sets up:
 
-- A **worktree** materialized from the current `HEAD` under `.wanman/worktree/`. Agents edit this, not your real checkout.
+- A base **worktree** materialized from `HEAD` under `.wanman/worktree/`, plus **per-worker isolated git worktrees** under `.wanman/worktrees/<worker>/` (branch `agent/<worker>`) when `worktreeIsolation` is enabled (on by default in `wanman takeover`). Each code-writing worker (`dev`, `dev-*`, `devops`, `worker`, `worker-*`) receives `$WANMAN_AGENT_WORKTREE` and `$WANMAN_AGENT_BRANCH` and works in its own branch; unmerged or dirty worker branches are preserved automatically when dynamic clones are torn down.
 - A **per-agent `$HOME`** under `.wanman/home/<agent>/` with generated `wanman` and `pnpm` wrappers. Shell profile writes, `.npmrc` edits, etc. stay contained.
 - **Runtime-specific auth & state directories** under that home: `.claude/` and `.codex/` are isolated per agent, while `.gemini/` is selectively bridged (symlinking `GEMINI.md`, `antigravity-cli/settings.json`, `antigravity-cli/keybindings.json`, and `config/{config.json,mcp_config.json,hooks.json,plugins,agents}` when present; symlinking `Library/Keychains` on macOS) so host auth/config are available while `antigravity-cli` session directories (`conversations/`, `brain/`, `cache/`) and `config/skills/` stay isolated per agent.
 
@@ -215,18 +214,16 @@ Skills shipped today:
 - `wanman-cli` — CLI command reference agents read at runtime.
 - `workspace-conventions` — file layout agents should follow inside their workspace.
 
-## 10. Brain & persistence
+## 10. Local persistence & circuit breakers
 
-Two persistence layers, both optional to the agent code:
-
-- **Local SQLite (`dbPath` in agents config)** — always present. Messages, context, tasks, artifacts, hypotheses, capsules. Durable across supervisor restarts inside the same workspace.
-- **`@sandbank.dev/db9` brain adapter (optional)** — if the runtime is configured with a db9 connection (token + db name), it mirrors artifacts and context to a cross-run, cross-machine store. Useful for fleets of supervisors sharing memory, or for post-run analysis. The OSS build treats db9 as an optional peer dependency — missing it just disables the mirror.
+- **Local SQLite (`dbPath` in agents config)** — always present, zero cloud dependencies. Stores messages, context, tasks, initiatives, capsules, and artifacts (`ArtifactStore`) durably across supervisor restarts inside the same workspace.
+- **Hard circuit breakers** — Supervisor enforces live global token budgets (`tokenBudget` / `--max-tokens`), per-agent token budgets (`agentTokenBudget` / `--agent-max-tokens`), global wall-clock duration caps (`maxDurationMs` / `--max-duration`), and per-spawn timeouts (`spawnTimeoutMs` / `--spawn-timeout`). When a budget trips, Supervisor stops affected or all agents immediately, marks `/health.budget.halted = true`, emits `run.halted`, and lets the CLI print a structured stop report.
 
 ## 11. HTTP surface at a glance
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/health` | GET | Supervisor + per-agent state snapshot. |
+| `/health` | GET | Supervisor + per-agent telemetry (`runtime`, `model`, `currentTool`, `totalTokens`, `branch`), `budget`, and `worktrees`. |
 | `/rpc` | POST | JSON-RPC 2.0 — the main CLI surface. |
 | `/events` | POST | External-event ingress. |
 
@@ -234,9 +231,9 @@ Main RPC methods:
 
 | Method | Purpose |
 |--------|---------|
-| `agent.send` / `agent.recv` / `agent.list` | Inter-agent messaging. |
+| `agent.send` / `agent.recv` / `agent.list` | Inter-agent messaging and live agent telemetry. |
 | `context.get` / `context.set` / `context.list` | Shared context. |
-| `task.*` / `initiative.*` / `capsule.*` / `artifact.*` / `hypothesis.*` | Structured state. |
+| `task.*` / `initiative.*` / `capsule.*` / `artifact.*` | Structured local SQLite state. |
 | `event.push` | Same as `POST /events`, for RPC clients. |
 | `health.check` | Health snapshot over RPC. |
 

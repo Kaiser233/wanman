@@ -14,9 +14,6 @@
     "better-sqlite3": "^11.7.0",
     "ws": "^8.19.0"
   },
-  "optionalDependencies": {
-    "@sandbank.dev/db9": "^0.2.0"
-  },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",

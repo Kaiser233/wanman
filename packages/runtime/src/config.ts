@@ -4,12 +4,18 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync } from 'child_process';
 import type { AgentDefinition, AgentMatrixConfig } from '@wanman/core';
 import { normalizeAgentRuntime } from './agent-adapter.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('config');
+
+function parsePositiveIntEnv(key: string): number | undefined {
+  const raw = process.env[key]?.trim();
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
 
 /** Load agent matrix config from JSON file or env var. */
 export function loadConfig(): AgentMatrixConfig {
@@ -22,7 +28,7 @@ export function loadConfig(): AgentMatrixConfig {
   }
 
   const raw = fs.readFileSync(configPath, 'utf-8');
-  // Resolve ${ENV_VAR} patterns in config (e.g. "${DB9_TOKEN}" → actual env value)
+  // Resolve ${ENV_VAR} patterns in config
   const resolved = raw.replace(/\$\{(\w+)\}/g, (_, name) => process.env[name] || '');
   const config = JSON.parse(resolved) as AgentMatrixConfig;
 
@@ -39,6 +45,20 @@ export function loadConfig(): AgentMatrixConfig {
   if (process.env['WANMAN_GIT_ROOT']) {
     config.gitRoot = process.env['WANMAN_GIT_ROOT'];
   }
+  const worktreeFlag = process.env['WANMAN_WORKTREE_ISOLATION']?.trim().toLowerCase();
+  if (worktreeFlag === '1' || worktreeFlag === 'true' || worktreeFlag === 'yes') {
+    config.worktreeIsolation = true;
+  } else if (worktreeFlag === '0' || worktreeFlag === 'false' || worktreeFlag === 'no') {
+    config.worktreeIsolation = false;
+  }
+  const tokenBudget = parsePositiveIntEnv('WANMAN_TOKEN_BUDGET');
+  if (tokenBudget !== undefined) config.tokenBudget = tokenBudget;
+  const agentTokenBudget = parsePositiveIntEnv('WANMAN_AGENT_TOKEN_BUDGET');
+  if (agentTokenBudget !== undefined) config.agentTokenBudget = agentTokenBudget;
+  const maxDurationMs = parsePositiveIntEnv('WANMAN_MAX_DURATION_MS');
+  if (maxDurationMs !== undefined) config.maxDurationMs = maxDurationMs;
+  const spawnTimeoutMs = parsePositiveIntEnv('WANMAN_TIME_BUDGET_MS');
+  if (spawnTimeoutMs !== undefined) config.spawnTimeoutMs = spawnTimeoutMs;
   // Override model for all agents (e.g. WANMAN_MODEL=qwen/qwen3.5-35b-a3b for local LLM)
   if (process.env['WANMAN_MODEL']) {
     const model = process.env['WANMAN_MODEL'];
@@ -75,17 +95,6 @@ export function loadConfig(): AgentMatrixConfig {
     log.info('agy model override', { model: agyModel, agents: updated });
   }
 
-  // Disable brain when WANMAN_NO_BRAIN=1 (web app uses D1 instead)
-  if (process.env['WANMAN_NO_BRAIN'] === '1') {
-    config.brain = undefined;
-    log.info('brain disabled via WANMAN_NO_BRAIN');
-  }
-
-  // Ensure brain.dbName is not empty (fallback when WANMAN_BRAIN_NAME env var is unset)
-  if (config.brain && !config.brain.dbName) {
-    config.brain.dbName = 'wanman-brain-local';
-  }
-
   return config;
 }
 
@@ -108,18 +117,6 @@ export function ensureWorkspaceDirs(config: AgentMatrixConfig): void {
       log.info('copied skill file', { agent: agent.name, src: skillSrc });
     }
   }
-
-  // Fix workspace ownership for agent user
-  const agentUser = process.env['WANMAN_AGENT_USER'];
-  if (agentUser && process.getuid?.() === 0) {
-    try {
-      execSync(`chown -R ${agentUser}:${agentUser} ${root}`, { stdio: 'pipe' });
-      log.info('fixed workspace ownership', { user: agentUser, path: root });
-    } catch (err) {
-      log.warn('failed to chown workspace', { user: agentUser, error: (err as Error).message });
-    }
-  }
-
 }
 
 /**

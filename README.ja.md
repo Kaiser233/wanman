@@ -15,26 +15,23 @@ wanman という名前は、日本語の [ワンマン電車 / one-man train](ht
 ## 何をするか
 
 - 複数のエージェント（CEO、dev、devops、marketing、feedback など）を、steer/follow-up 優先度付きの非同期メッセージバスで連携させます。
-- 各エージェントを実際の Claude Code、Codex、または Antigravity (`agy`) CLI サブプロセスとして実行します。CLI 認証はあなた自身のものを利用し、wanman は spawn、プロンプト送出、ライフサイクルを統括します。
-- すべてのエージェントをエージェントごとのワークツリーとエージェントごとの `$HOME` で隔離するため、エージェントがあなたの汚れた作業コピーやシェルプロファイルを変更することはありません。
+- 各エージェントを実際の **Antigravity (`agy`)**（デフォルト）、Claude Code、または Codex CLI サブプロセスとして実行します。CLI 認証はあなた自身のものを利用し、wanman は spawn、プロンプト送出、ライフサイクルを統括します。
+- 3 段階の抽象モデル tier（`high` / `standard` / `fast`）をサポートし、各 runtime のデフォルトへ解決します。
+- コード編集 worker（`dev`、`dev-*`、`devops`、`worker`、`worker-*`）ごとに独立した git ワークツリーとブランチ（`agent/<name>`）および隔離された `$HOME` を割り当て、未マージの変更を自動保護します。
+- 無人実行向けのハードサーキットブレーカー（`--max-tokens`、`--agent-max-tokens`、`--max-duration`、`--spawn-timeout`）と拡張 TUI・構造化レポートを備えています。
+- 純ローカル永続化：すべての状態（messages、context、tasks、initiatives、capsules、artifacts）を単一のローカル SQLite（`wanman.db`）に保存し、クラウド依存を排除しています。
 - CLI ファーストです。すべてが `wanman` コマンドと JSON-RPC スーパーバイザー経由でスクリプト化可能、観測可能、再現可能です。
-
-[wanman.ai](https://wanman.ai/) は、ホステッド版だけの機能も提供します:
-- 各 agent runtime グループを個別の sandbox 環境に隔離し、大規模・高並行のタスク実行をサポートします。
-- agents の役割を動的に設定し、インターネット上の優れた agent 役割カタログから役割を自動抽出できます。
-- 動的な skill の自己進化をサポートします。
-- db9 によるグローバル検索とストーリー検索をサポートします。
 
 ## Quickstart
 
 ```bash
-# 前提条件: Node 20+, pnpm 9+, git, 認証済みの Claude Code、Codex、または Antigravity (agy) CLI。
-git clone git@github.com:chekusu/wanman.git wanman.dev
-cd wanman.dev
+# 前提条件: Node 20+, pnpm 9+, git, 認証済みの Antigravity (agy)、Claude Code、または Codex CLI。
+git clone https://github.com/Kaiser233/wanman.git wanman
+cd wanman
 pnpm install
 pnpm build
 
-# ソースから直接実行します。npm package の公開は不要です。
+# ソースから直接実行します（デフォルト: agy + worker ごとの隔離 worktree）。
 pnpm --filter @wanman/cli exec wanman takeover /path/to/any/git/repo
 ```
 
@@ -61,9 +58,8 @@ node packages/cli/dist/wanman.mjs takeover /path/to/any/git/repo
 | `wanman task …` | タスクプールを管理します: `create`、`list`、`get`、`update`、`done`。`--after` による依存関係もサポートします。 |
 | `wanman initiative …` | 長期的な initiative を管理します: `create`、`list`、`get`、`update`。 |
 | `wanman capsule …` | 変更 capsule を管理します: `create`、`list`、`mine`、`get`、`update`。 |
-| `wanman artifact …` | 構造化された artifact を保存・取得します: `put`、`list`、`get`。 |
-| `wanman hypothesis …` | 状態遷移付きで hypothesis を追跡します: `create`、`list`、`update`。 |
-| `wanman watch` | スーパーバイザーとエージェントの活動をライブ配信します。 |
+| `wanman artifact …` | 構造化された artifact をローカル SQLite に保存・取得します: `put`、`list`、`get`。 |
+| `wanman watch` | ローカルの `loop-events.ndjson` ログとサーキットブレーカーイベントを確認します。 |
 | `wanman run <goal>` | 単発ゴールに対して matrix を起動します。 |
 | `wanman takeover <path>` | 既存の git リポジトリを完全な agent matrix で引き継ぎます。 |
 | `wanman skill:check [path]` | skill ドキュメントが実在の CLI コマンドのみを参照しているか検証します。 |
@@ -98,15 +94,18 @@ node packages/cli/dist/wanman.mjs takeover /path/to/any/git/repo
 |---------|---------|
 | `WANMAN_URL` | CLI 向けの Supervisor HTTP URL（デフォルト `http://localhost:3120`）。 |
 | `WANMAN_AGENT_NAME` | 現在のエージェントを識別します。エージェントプロセス内で既定の送信者/受信者として使われます。 |
-| `WANMAN_RUNTIME` | `claude`（デフォルト）、`codex`、または `agy`（エイリアス: `atg`、`antigravity`）— エージェントごとの CLI アダプタを選択します。 |
+| `WANMAN_RUNTIME` | `agy`（デフォルト; エイリアス: `atg`、`antigravity`）、`claude`、または `codex` — エージェントごとの CLI アダプタを選択します。 |
 | `WANMAN_MODEL`, `WANMAN_CODEX_MODEL`, `WANMAN_CODEX_REASONING_EFFORT` | 共通および Codex runtime のモデル・推論強度の上書き設定です。 |
 | `WANMAN_CODEX_FAST` | 設定すると Codex アダプタを低レイテンシ寄りのデフォルトに傾けます。 |
-| `WANMAN_AGY_MODEL`, `WANMAN_AGY_HIGH_MODEL`, `WANMAN_AGY_STANDARD_MODEL` | Antigravity (`agy`) アダプタのモデル上書き設定です（`default` 指定で `--model` を省略）。 |
+| `WANMAN_AGY_MODEL`, `WANMAN_AGY_HIGH_MODEL`, `WANMAN_AGY_STANDARD_MODEL`, `WANMAN_AGY_FAST_MODEL` | Antigravity (`agy`) アダプタのモデル上書き設定です（`default` 指定で `--model` を省略）。 |
 | `WANMAN_AGY_EFFORT` | `agy` の推論強度（`low`、`medium`、`high`、`xhigh`、`max`）。 |
 | `WANMAN_AGY_BIN` | `agy` バイナリパスを上書きします（既定は `PATH` および `~/.local/bin/agy`）。 |
+| `WANMAN_WORKTREE_ISOLATION` | `1` で worker ごとの独立ワークツリー（`agent/<name>`）を有効化、`0` で共有ワークツリー。 |
+| `WANMAN_TOKEN_BUDGET` / `WANMAN_AGENT_TOKEN_BUDGET` | 全体（既定 `1000000`）およびエージェント単位（既定 `0` 無制限）のトークン上限。 |
+| `WANMAN_MAX_DURATION_MS` / `WANMAN_TIME_BUDGET_MS` | 全体実行時間上限（既定 `3600000`）と 1 スポーンタイムアウト（既定 `600000`）。 |
 | `WANMAN_SKILL_SNAPSHOTS_DIR` | runtime が skill 有効化スナップショットを展開する場所を上書きします（デフォルトは shared-skills ディレクトリの兄弟、フォールバックは `$TMPDIR/wanman-skill-snapshots`）。 |
 
-クロスラン記憶のために、オプションで `@sandbank.dev/db9` brain アダプタを接続できます — [`docs/architecture.ja.md`](docs/architecture.ja.md#brain--persistence) を参照してください。
+すべての状態はローカル SQLite（`wanman.db`）に永続化されます — [`docs/architecture.ja.md`](docs/architecture.ja.md) を参照してください。
 
 ## エージェント設定
 

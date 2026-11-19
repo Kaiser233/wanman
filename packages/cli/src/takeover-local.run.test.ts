@@ -3,6 +3,7 @@ import * as path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createDefaultRunOptions } from '@wanman/host-sdk'
 import type { RunLocalSupervisorSessionParams } from './local-supervisor-session.js'
 import type { GeneratedAgentConfig, ProjectProfile } from './takeover-project.js'
 
@@ -159,16 +160,17 @@ describe('runLocal', () => {
     }
 
     await runLocal(profile, generated, wanmanDir, {
+      ...createDefaultRunOptions(),
       loops: 3,
       pollInterval: 0,
       output: path.join(project, 'out'),
       keep: false,
-      noBrain: true,
       infinite: false,
       errorLimit: 3,
       runtime: 'codex',
       codexModel: 'gpt-test',
       codexReasoningEffort: 'medium',
+      worktreeIsolation: true,
     })
 
     expect(runLocalSupervisorSessionMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -177,6 +179,7 @@ describe('runLocal', () => {
         gitRoot: worktree,
         runtime: 'codex',
         codexModel: 'gpt-test',
+        worktreeIsolation: true,
       }),
       keep: false,
       signalMode: 'forward_only',
@@ -184,7 +187,7 @@ describe('runLocal', () => {
     expect(fs.readFileSync(path.join(wanmanDir, 'live-dashboard.txt'), 'utf-8')).toContain('Implement')
   })
 
-  it('forwards agy runtime options to runLocalSupervisorSession', async () => {
+  it('forwards agy runtime and budget options to runLocalSupervisorSession', async () => {
     const project = makeTmpDir()
     const wanmanDir = path.join(project, '.wanman')
     const worktree = path.join(wanmanDir, 'worktree')
@@ -224,16 +227,19 @@ describe('runLocal', () => {
     }
 
     await runLocal(profile, generated, wanmanDir, {
+      ...createDefaultRunOptions(),
       loops: 3,
       pollInterval: 0,
       output: path.join(project, 'out'),
       keep: false,
-      noBrain: true,
       infinite: false,
       errorLimit: 3,
       runtime: 'agy',
       agyModel: 'gemini-3.8-flash-low',
       agyEffort: 'max',
+      maxTokens: 200_000,
+      maxDurationSec: 900,
+      worktreeIsolation: true,
     })
 
     expect(runLocalSupervisorSessionMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -241,7 +247,105 @@ describe('runLocal', () => {
         runtime: 'agy',
         agyModel: 'gemini-3.8-flash-low',
         agyEffort: 'max',
+        maxTokens: 200_000,
+        maxDurationSec: 900,
+        worktreeIsolation: true,
       }),
     }))
+  })
+
+  it('exits cleanly and prints structured report when budget circuit breaker trips', async () => {
+    const project = makeTmpDir()
+    const wanmanDir = path.join(project, '.wanman')
+    const worktree = path.join(wanmanDir, 'worktree')
+    fs.mkdirSync(worktree, { recursive: true })
+    fs.writeFileSync(path.join(wanmanDir, 'agents.json'), '{"agents":[]}')
+
+    execSyncMock.mockImplementation((command: string) => {
+      if (command.includes('command -v')) return ''
+      if (command.includes('git status --porcelain')) return '# branch.head agent/dev\n# branch.ab +1 -0\n'
+      if (command.includes('gh pr list')) return '[]'
+      return ''
+    })
+
+    const logs: string[] = []
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((msg = '') => { logs.push(String(msg)) })
+
+    runLocalSupervisorSessionMock.mockImplementationOnce(async (params: RunLocalSupervisorSessionParams) => {
+      const child = new EventEmitter()
+      const runtime = {
+        getHealth: vi.fn()
+          .mockResolvedValueOnce({
+            agents: [{ name: 'dev', state: 'running', lifecycle: 'on-demand', branch: 'agent/dev' }],
+            budget: { totalTokens: 500, tokenBudget: 1000, agentTokenBudget: 0, elapsedMs: 1000, maxDurationMs: 60_000, spawnTimeoutMs: 60_000, halted: false },
+          })
+          .mockResolvedValue({
+            agents: [{ name: 'dev', state: 'stopped', lifecycle: 'on-demand', runtime: 'agy', model: 'gemini-4-carbon-medium', totalTokens: 1200, branch: 'agent/dev', haltedReason: 'token_budget_exceeded' }],
+            budget: { totalTokens: 1200, tokenBudget: 1000, agentTokenBudget: 0, elapsedMs: 2000, maxDurationMs: 60_000, spawnTimeoutMs: 60_000, halted: true, haltReason: 'token_budget_exceeded' },
+          }),
+        listTasks: vi.fn().mockResolvedValue([{ id: 't1', title: 'Fix bug', status: 'in_progress', assignee: 'dev', priority: 5 }]),
+        listInitiatives: vi.fn().mockResolvedValue([{ id: 'i1', status: 'active', title: 'Core' }]),
+        listCapsules: vi.fn().mockResolvedValue([]),
+        listArtifacts: vi.fn().mockResolvedValue([]),
+        createInitiative: vi.fn().mockResolvedValue(undefined),
+        sendMessage: vi.fn().mockResolvedValue(undefined),
+        spawnAgent: vi.fn().mockResolvedValue(undefined),
+        updateTask: vi.fn().mockResolvedValue(undefined),
+      }
+      const supervisor = {
+        readLogs: vi.fn().mockResolvedValue({ lines: [], cursor: 0 }),
+      }
+      await params.run({
+        supervisor,
+        runtime,
+        child,
+        port: 3333,
+        endpoint: 'http://127.0.0.1:3333',
+        entrypoint: '/tmp/entrypoint.js',
+        isShuttingDown: () => false,
+      } as never)
+    })
+
+    try {
+      await runLocal({
+        path: project,
+        languages: ['typescript'],
+        packageManagers: [],
+        frameworks: [],
+        ci: [],
+        testFrameworks: [],
+        hasReadme: true,
+        hasClaudeMd: false,
+        hasDocs: false,
+        issueTracker: 'none',
+      }, {
+        runtime: 'agy',
+        goal: 'Halt test',
+        agents: [],
+        intent: {
+          projectName: 'app',
+          summary: 'Halt test',
+          canonicalDocs: [],
+          roadmapDocs: [],
+          codeRoots: [],
+          packageScripts: [],
+          strategicThemes: [],
+          mission: 'Halt test',
+        },
+      }, wanmanDir, {
+        ...createDefaultRunOptions(),
+        loops: 10,
+        pollInterval: 0,
+        output: path.join(project, 'out'),
+        maxTokens: 1000,
+        worktreeIsolation: true,
+      })
+    } finally {
+      logSpy.mockRestore()
+    }
+
+    const joined = logs.join('\n')
+    expect(joined).toContain('HALTED (token_budget_exceeded)')
+    expect(joined).toContain('agent/dev')
   })
 })

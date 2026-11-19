@@ -323,24 +323,20 @@ describe('spawnAgy & AgyAdapter', () => {
     expect(writeSpy).not.toHaveBeenCalled();
   });
 
-  it('uses runuser when running as root with runAsUser set', () => {
-    const getuid = process.getuid ? vi.spyOn(process, 'getuid').mockReturnValue(0) : undefined;
-    const proc = createMockProc();
-    spawnMock.mockReturnValue(proc);
-
-    spawnAgy(makeOpts({
-      runAsUser: 'agent',
-      env: { WANMAN_AGY_BIN: '/opt/bin/agy' },
-    }));
-
-    expect(spawnMock).toHaveBeenCalledWith(
-      'runuser',
-      expect.arrayContaining(['-u', 'agent', '--', '/opt/bin/agy', '--input-format', 'stream-json']),
-      expect.objectContaining({
-        env: expect.objectContaining({ HOME: '/home/agent' }),
-      }),
-    );
-    getuid?.mockRestore();
+  it('marks DONE tool step_update events with tool_done so callers can clear currentTool', () => {
+    const doneTool = normalizeAgyEvent({
+      event: 'step_update',
+      step_update: {
+        conversation_id: 'conv-1',
+        step_index: 2,
+        state: 'DONE',
+        step_type: 'tool',
+        tool_name: 'read_file',
+        tool_info: { name: 'read_file', output: 'ok' },
+      },
+    });
+    expect(doneTool.events[0]?.['tool_done']).toBe(true);
+    expect(doneTool.events[0]?.['tool_name']).toBeUndefined();
   });
 
   it('streams events, captures session id (including late subscribers), and emits onResult once per result', async () => {

@@ -14,7 +14,6 @@ vi.mock('./commands/task.js', () => ({ taskCommand: vi.fn() }));
 vi.mock('./commands/initiative.js', () => ({ initiativeCommand: vi.fn() }));
 vi.mock('./commands/capsule.js', () => ({ capsuleCommand: vi.fn() }));
 vi.mock('./commands/artifact.js', () => ({ artifactCommand: vi.fn() }));
-vi.mock('./commands/hypothesis.js', () => ({ hypothesisCommand: vi.fn() }));
 
 import { run, HELP, isDirectCliExecution } from './index.js';
 import { sendCommand } from './commands/send.js';
@@ -26,7 +25,6 @@ import { taskCommand } from './commands/task.js';
 import { initiativeCommand } from './commands/initiative.js';
 import { capsuleCommand } from './commands/capsule.js';
 import { artifactCommand } from './commands/artifact.js';
-import { hypothesisCommand } from './commands/hypothesis.js';
 
 const mockSend = vi.mocked(sendCommand);
 const mockRecv = vi.mocked(recvCommand);
@@ -37,7 +35,6 @@ const mockTask = vi.mocked(taskCommand);
 const mockInitiative = vi.mocked(initiativeCommand);
 const mockCapsule = vi.mocked(capsuleCommand);
 const mockArtifact = vi.mocked(artifactCommand);
-const mockHypothesis = vi.mocked(hypothesisCommand);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -92,11 +89,6 @@ describe('command routing', () => {
   it('routes "artifact" to artifactCommand', async () => {
     await run('artifact', ['list', '--agent', 'cto']);
     expect(mockArtifact).toHaveBeenCalledWith(['list', '--agent', 'cto']);
-  });
-
-  it('routes "hypothesis" to hypothesisCommand', async () => {
-    await run('hypothesis', ['update', 'hyp-1', '--status', 'accepted']);
-    expect(mockHypothesis).toHaveBeenCalledWith(['update', 'hyp-1', '--status', 'accepted']);
   });
 });
 

@@ -61,21 +61,6 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
-  packages/finops:
-    devDependencies:
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.19.17
-      esbuild:
-        specifier: ^0.24.0
-        version: 0.24.2
-      tsx:
-        specifier: ^4.21.0
-        version: 4.21.0
-      typescript:
-        specifier: ^5.7.0
-        version: 5.9.3
-
   packages/host-sdk:
     dependencies:
       '@wanman/core':
@@ -106,10 +91,6 @@ importers:
       ws:
         specifier: ^8.19.0
         version: 8.20.0
-    optionalDependencies:
-      '@sandbank.dev/db9':
-        specifier: ^0.2.0
-        version: 0.2.0
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.12
@@ -575,17 +556,6 @@ packages:
 
   '@rolldown/pluginutils@1.0.0-rc.15':
     resolution: {integrity: sha512-UromN0peaE53IaBRe9W7CjrZgXl90fqGpK+mIZbA3qSTeYqg3pqpROBdIPvOG3F5ereDHNwoHBI2e50n1BDr1g==}
-
-  '@sandbank.dev/core@0.2.1':
-    resolution: {integrity: sha512-g63h53/EU1nh1EhZUS4KbBoAvKKN5/1R9jguDDp3MBOa5QRuBXixaMJdi5RmjH5rRxYR5sogE9K8+L7kk7GySg==}
-    peerDependencies:
-      '@sandbank.dev/relay': workspace:*
-    peerDependenciesMeta:
-      '@sandbank.dev/relay':
-        optional: true
-
-  '@sandbank.dev/db9@0.2.0':
-    resolution: {integrity: sha512-1g1nA1mThqR7rWlsRhAwpc1B5eiMVOWK52BvoC83O/Orti9UkEmHCnEyhu04io09HlPk+J6zoIoauGi8ZkfQAA==}
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
@@ -1466,16 +1436,6 @@ snapshots:
     optional: true
 
   '@rolldown/pluginutils@1.0.0-rc.15': {}
-
-  '@sandbank.dev/core@0.2.1':
-    optional: true
-
-  '@sandbank.dev/db9@0.2.0':
-    dependencies:
-      '@sandbank.dev/core': 0.2.1
-    transitivePeerDependencies:
-      - '@sandbank.dev/relay'
-    optional: true
 
   '@standard-schema/spec@1.1.0': {}
 

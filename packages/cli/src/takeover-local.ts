@@ -29,9 +29,18 @@ import {
   type TakeoverRuntimePaths,
   writeTakeoverOverlayFiles,
 } from './takeover-project.js'
-import { formatDashboard, renderDashboard, type DashboardState } from './tui/dashboard.js'
+import { formatDashboard, formatElapsed, formatRunReport, formatTokens, renderDashboard, type DashboardState } from './tui/dashboard.js'
 
 const MAX_DEV_WORKERS = 3
+
+export interface LocalWorktreeBranchState {
+  agent: string
+  branch: string
+  path: string
+  ahead: number
+  modified: number
+  prUrl?: string
+}
 
 export interface LocalObservationState {
   health: RuntimeHealth
@@ -45,6 +54,7 @@ export interface LocalObservationState {
   hasUpstream: boolean
   prUrl?: string
   modifiedFiles: string[]
+  worktreeBranches?: LocalWorktreeBranchState[]
 }
 
 interface LocalGitState {
@@ -80,14 +90,13 @@ export function warnLocalEnvironment(profile: ProjectProfile, worktreePath: stri
     }
   }
 
-  const hostCli = path.join(profile.path, 'packages/cli/dist/index.js')
-  const hostRuntime = path.join(profile.path, 'packages/runtime/dist/entrypoint.js')
-  if (!fs.existsSync(hostCli)) warnings.push(`missing built CLI entrypoint: ${hostCli}`)
-  if (!fs.existsSync(hostRuntime)) warnings.push(`missing built runtime entrypoint: ${hostRuntime}`)
-
   const hostNodeModules = path.join(profile.path, 'node_modules')
   const worktreeNodeModules = path.join(worktreePath, 'node_modules')
-  if (!fs.existsSync(hostNodeModules) && !fs.existsSync(worktreeNodeModules)) {
+  if (
+    (profile.packageManagers.includes('pnpm') || profile.packageManagers.includes('npm') || profile.packageManagers.includes('yarn'))
+    && !fs.existsSync(hostNodeModules)
+    && !fs.existsSync(worktreeNodeModules)
+  ) {
     warnings.push('no node_modules found in host repo or worktree; agent verification commands may fail')
   }
 
@@ -248,12 +257,10 @@ export function buildLocalDashboardState(
     loop: Math.max(observedLoops, 1),
     maxLoops: Math.max(maxLoops, 1),
     elapsed: Date.now() - startedAt,
-    brainName: state.prUrl ? `PR: ${state.prUrl}` : state.activeBranch,
-    agents: state.health.agents.map(agent => ({
-      name: agent.name,
-      state: agent.state,
-      lifecycle: agent.lifecycle,
-    })),
+    branchLabel: state.prUrl ? `PR: ${state.prUrl}` : state.activeBranch,
+    budget: state.health.budget,
+    worktrees: state.health.worktrees,
+    agents: state.health.agents,
     tasks: state.tasks,
     logs: state.logs,
     artifacts: state.artifacts,
@@ -281,8 +288,37 @@ export async function collectLocalObservationState(
   const initiatives = await runtime.listInitiatives().catch(() => [])
   const capsules = await runtime.listCapsules().catch(() => [])
   const artifacts = await runtime.listArtifacts().catch(() => [])
-  const gitState = await readLocalGitState(worktreePath)
-  const prUrl = await detectPullRequestUrl(worktreePath, gitState.activeBranch)
+  const baseGitState = await readLocalGitState(worktreePath)
+  let prUrl = await detectPullRequestUrl(worktreePath, baseGitState.activeBranch)
+
+  let activeBranch = baseGitState.activeBranch
+  let branchAhead = baseGitState.branchAhead
+  let hasUpstream = baseGitState.hasUpstream
+  const modifiedSet = new Set<string>(baseGitState.modifiedFiles)
+  const worktreeBranches: LocalWorktreeBranchState[] = []
+
+  for (const wt of health.worktrees ?? []) {
+    if (!fs.existsSync(wt.path)) continue
+    const wtGit = await readLocalGitState(wt.path)
+    const wtBranch = wtGit.activeBranch ?? wt.branch
+    const wtPr = await detectPullRequestUrl(wt.path, wtBranch)
+    worktreeBranches.push({
+      agent: wt.agent,
+      branch: wtBranch,
+      path: wt.path,
+      ahead: wtGit.branchAhead,
+      modified: wtGit.modifiedFiles.length,
+      ...(wtPr ? { prUrl: wtPr } : {}),
+    })
+    if (!activeBranch && wtBranch) activeBranch = wtBranch
+    branchAhead += wtGit.branchAhead
+    if (wtGit.hasUpstream) hasUpstream = true
+    if (!prUrl && wtPr) prUrl = wtPr
+    for (const file of wtGit.modifiedFiles) {
+      modifiedSet.add(`${wt.agent}:${file}`)
+    }
+  }
+
   return {
     health,
     tasks,
@@ -290,11 +326,12 @@ export async function collectLocalObservationState(
     capsules,
     artifacts,
     logs: logLines.slice(-50),
-    activeBranch: gitState.activeBranch,
-    branchAhead: gitState.branchAhead,
-    hasUpstream: gitState.hasUpstream,
+    activeBranch,
+    branchAhead,
+    hasUpstream,
     prUrl,
-    modifiedFiles: gitState.modifiedFiles,
+    modifiedFiles: Array.from(modifiedSet),
+    ...(worktreeBranches.length > 0 ? { worktreeBranches } : {}),
   }
 }
 
@@ -333,7 +370,7 @@ async function maybeScaleLocalWorkforce(runtime: RuntimeClient, state: LocalObse
 }
 
 function isTakeoverFeatureBranch(branch?: string): boolean {
-  return !!branch && /^(wanman|fix|feat|chore|docs)\//.test(branch)
+  return !!branch && /^(agent|wanman|fix|feat|chore|docs)\//.test(branch)
 }
 
 /** @internal exported for testing */
@@ -440,10 +477,18 @@ export async function maybeNudgeLocalPrExecution(
   return true
 }
 
+export interface LocalTakeoverMaterializeOptions {
+  worktreeIsolation?: boolean
+  tokenBudget?: number
+  agentTokenBudget?: number
+  maxDurationMs?: number
+  spawnTimeoutMs?: number
+}
+
 export function materializeLocalTakeoverProject(
   profile: ProjectProfile,
   generated: GeneratedAgentConfig,
-  opts?: { enableBrain?: boolean },
+  opts?: LocalTakeoverMaterializeOptions,
 ): string {
   const wanmanDir = path.join(profile.path, '.wanman')
   const worktreePath = path.join(wanmanDir, 'worktree')
@@ -479,10 +524,34 @@ export function materializeLocalTakeoverProject(
     gitRoot: worktreePath,
     dbPath: path.join(wanmanDir, 'wanman.db'),
     runtimePaths: localRuntimePaths,
-    enableBrain: opts?.enableBrain,
+    worktreeIsolation: opts?.worktreeIsolation,
+    tokenBudget: opts?.tokenBudget,
+    agentTokenBudget: opts?.agentTokenBudget,
+    maxDurationMs: opts?.maxDurationMs,
+    spawnTimeoutMs: opts?.spawnTimeoutMs,
   })
 
   return wanmanDir
+}
+
+function buildBranchSummary(state: LocalObservationState): Array<{ branch: string; ahead: number; modified: number; prUrl?: string }> {
+  if (state.worktreeBranches && state.worktreeBranches.length > 0) {
+    return state.worktreeBranches.map(wb => ({
+      branch: wb.branch,
+      ahead: wb.ahead,
+      modified: wb.modified,
+      ...(wb.prUrl ? { prUrl: wb.prUrl } : {}),
+    }))
+  }
+  if (state.activeBranch) {
+    return [{
+      branch: state.activeBranch,
+      ahead: state.branchAhead,
+      modified: state.modifiedFiles.length,
+      ...(state.prUrl ? { prUrl: state.prUrl } : {}),
+    }]
+  }
+  return []
 }
 
 export async function runLocal(
@@ -499,10 +568,14 @@ export async function runLocal(
   fs.writeFileSync(liveDashboardPath, 'takeover starting...\n')
   warnLocalEnvironment(profile, worktreePath)
 
+  const tokenCapLabel = opts.maxTokens > 0 ? `${formatTokens(opts.maxTokens)} tok` : '∞ tok'
+  const durCapLabel = opts.maxDurationSec > 0 ? formatElapsed(opts.maxDurationSec * 1000) : '∞'
   console.log('\n  Starting supervisor locally...')
   console.log(`  Config:     ${configPath}`)
   console.log(`  Workspace:  ${agentsDir}`)
   console.log(`  Git root:   ${worktreePath}`)
+  console.log(`  Worktrees:  ${opts.worktreeIsolation ? 'isolated per worker (agent/<name>)' : 'shared'}`)
+  console.log(`  Budget:     ${tokenCapLabel} / ${durCapLabel}`)
   console.log(`  Runtime:    ${generated.runtime}`)
   if (generated.runtime === 'codex') {
     const codexModel = opts.codexModel ?? process.env['WANMAN_CODEX_MODEL'] ?? process.env['WANMAN_MODEL'] ?? 'default'
@@ -526,6 +599,11 @@ export async function runLocal(
       codexReasoningEffort: opts.codexReasoningEffort,
       ...(opts.agyModel ? { agyModel: opts.agyModel } : {}),
       ...(opts.agyEffort ? { agyEffort: opts.agyEffort } : {}),
+      maxTokens: opts.maxTokens,
+      ...(opts.agentMaxTokens > 0 ? { agentMaxTokens: opts.agentMaxTokens } : {}),
+      maxDurationSec: opts.maxDurationSec,
+      spawnTimeoutSec: opts.spawnTimeoutSec,
+      worktreeIsolation: opts.worktreeIsolation,
     },
     keep: opts.keep,
     signalMode: 'forward_only',
@@ -562,6 +640,7 @@ export async function runLocal(
       let lastPrintedSnapshot = ''
       let childExitCode: number | null = null
       let childError: Error | null = null
+      let haltReason: string | undefined
       child.on('error', err => { childError = err })
       child.on('close', code => { childExitCode = code ?? 0 })
       const maxIdleMs = opts.infinite
@@ -574,12 +653,14 @@ export async function runLocal(
         logCursor = nextLogs.cursor
         appendLogLines(localLogs, nextLogs.lines)
         let current = await collectLocalObservationState(runtime, worktreePath, localLogs)
-        const nudgedMission = await maybeNudgeLocalMissionControl(runtime, current, generated.intent, missionNudgeState).catch(() => false)
-        if (nudgedMission) current = await collectLocalObservationState(runtime, worktreePath, localLogs)
-        const scaled = await maybeScaleLocalWorkforce(runtime, current).catch(() => false)
-        if (scaled) current = await collectLocalObservationState(runtime, worktreePath, localLogs)
-        const nudgedPr = await maybeNudgeLocalPrExecution(runtime, current, prNudgeState).catch(() => false)
-        if (nudgedPr) current = await collectLocalObservationState(runtime, worktreePath, localLogs)
+        if (!current.health.budget?.halted) {
+          const nudgedMission = await maybeNudgeLocalMissionControl(runtime, current, generated.intent, missionNudgeState).catch(() => false)
+          if (nudgedMission) current = await collectLocalObservationState(runtime, worktreePath, localLogs)
+          const scaled = await maybeScaleLocalWorkforce(runtime, current).catch(() => false)
+          if (scaled) current = await collectLocalObservationState(runtime, worktreePath, localLogs)
+          const nudgedPr = await maybeNudgeLocalPrExecution(runtime, current, prNudgeState).catch(() => false)
+          if (nudgedPr) current = await collectLocalObservationState(runtime, worktreePath, localLogs)
+        }
         const progressed = hasLocalProgress(previous, current)
         const dashboardMaxLoops = opts.infinite ? Math.max(observedLoops, 1) : opts.loops
         const dashboardState = buildLocalDashboardState(
@@ -593,6 +674,13 @@ export async function runLocal(
         fs.writeFileSync(liveDashboardPath, `${dashboardSnapshot}\n`)
         if (process.stdout.isTTY) {
           renderDashboard(dashboardState)
+        }
+
+        if (current.health.budget?.halted) {
+          if (process.stdout.isTTY) logUpdate.clear()
+          haltReason = current.health.budget.haltReason ?? 'budget_exceeded'
+          previous = current
+          break
         }
 
         if (current.prUrl) {
@@ -642,6 +730,18 @@ export async function runLocal(
         }
         previous = current
       }
+
+      if (process.stdout.isTTY) logUpdate.clear()
+      console.log(formatRunReport({
+        goal: generated.goal,
+        elapsedMs: Date.now() - startedAt,
+        haltReason,
+        budget: previous.health.budget,
+        agents: previous.health.agents,
+        tasks: previous.tasks,
+        worktrees: previous.health.worktrees,
+        branchSummary: buildBranchSummary(previous),
+      }))
     },
   })
 }

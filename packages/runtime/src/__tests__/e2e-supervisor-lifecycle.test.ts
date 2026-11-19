@@ -45,29 +45,6 @@ vi.mock('../agent-process.js', () => {
   return { AgentProcess: MockAgentProcess }
 })
 
-// Brain mock
-let artifactId = 0
-vi.mock('../brain-manager.js', () => {
-  class MockBrainManager {
-    isInitialized = true
-    env = { DATABASE_URL: 'mock://', DB9_DATABASE_ID: 'm', DB9_DATABASE_NAME: 'm', PGHOST: 'm', PGPORT: '5432', PGUSER: 'm', PGPASSWORD: 'm', PGDATABASE: 'm' }
-    brainSkill = { name: 'brain', content: 'stub' }
-    dbId = 'mock'
-    async initialize() {}
-    async executeSQL(sql: string) {
-      if (sql.includes('CREATE TABLE') || sql.includes('CREATE INDEX')) return []
-      if (sql.includes('INSERT INTO artifacts')) {
-        return [{ id: ++artifactId, agent: 'dev', kind: 'tech_spec', created_at: new Date().toISOString() }]
-      }
-      if (sql.includes('INSERT INTO loop_events')) return []
-      if (sql.includes('INSERT INTO runs')) return []
-      if (sql.includes('UPDATE runs')) return []
-      return []
-    }
-  }
-  return { BrainManager: MockBrainManager }
-})
-
 import { Supervisor } from '../supervisor.js'
 import { LoopLogger } from '../loop-logger.js'
 import { Heartbeat } from '../heartbeat.js'
@@ -83,7 +60,6 @@ const config: AgentMatrixConfig = {
     { name: 'dev', lifecycle: 'on-demand' as const, model: 'claude-sonnet-4-6', systemPrompt: '' },
     { name: 'finance', lifecycle: '24/7' as const, model: 'claude-sonnet-4-6', systemPrompt: '' },
   ],
-  brain: { token: 'mock', dbName: 'mock' },
 }
 
 function rpc(method: string, params: Record<string, unknown> = {}): JsonRpcRequest {
@@ -105,7 +81,6 @@ describe('Supervisor full lifecycle E2E', () => {
 
     logger = new LoopLogger({ ndjsonPath, bufferCapacity: 500 })
     logger.attach(bus)
-    await logger.createRun('run-lifecycle-e2e', 'Full lifecycle test')
 
     heartbeat = new Heartbeat(heartbeatPath, 'run-lifecycle-e2e')
 
@@ -113,19 +88,12 @@ describe('Supervisor full lifecycle E2E', () => {
   }, 15_000)
 
   afterAll(async () => {
-    heartbeat.stop()
-    logger.detach(supervisor.eventBus!)
-
-    await logger.finalizeRun('run-lifecycle-e2e', {
-      totalLoops: supervisor.eventBus!.currentLoop,
-      productiveLoops: 0,
-      totalTokens: 0,
-      totalCostUsd: 0,
-      exitReason: 'test_complete',
-    })
-
-    await supervisor.shutdown()
-    try { rmSync(tmpDir, { recursive: true }) } catch { /* ignore */ }
+    heartbeat?.stop()
+    if (supervisor?.eventBus) {
+      logger?.detach(supervisor.eventBus)
+    }
+    await supervisor?.shutdown()
+    try { rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
   it('Loop 1: idle — no activity', () => {

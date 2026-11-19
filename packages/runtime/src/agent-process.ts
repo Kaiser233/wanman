@@ -46,14 +46,17 @@ export interface RunCompleteInfo {
   inputTokens: number
   outputTokens: number
   totalTokens: number
+  /** True when token deltas were already streamed live via onTokenUsage. */
+  tokensReportedLive?: boolean
 }
 
 /** Callback invoked after each agent run completes */
 export type RunCompleteCallback = (info: RunCompleteInfo) => void;
 export type AutonomousWorkChecker = (agentName: string) => boolean;
 export type EnvironmentProvider = (agentName: string) => Record<string, string> | Promise<Record<string, string>>;
+export type TokenUsageCallback = (agentName: string, delta: TokenUsageSnapshot) => void;
 
-interface TokenUsageSnapshot {
+export interface TokenUsageSnapshot {
   inputTokens: number
   outputTokens: number
   totalTokens: number
@@ -119,6 +122,13 @@ export class AgentProcess {
   private abortController: AbortController | null = null;
 
   get state(): AgentState { return this._state; }
+  get runtime(): AgentRuntime { return this._lastRuntime; }
+  get resolvedModel(): string { return this._lastModel; }
+  get currentTool(): string | undefined { return this._currentTool; }
+  get totalUsage(): TokenUsageSnapshot { return { ...this.cumulativeUsage }; }
+  get haltedReason(): string | undefined { return this._haltedReason; }
+  get branch(): string | undefined { return this._branch; }
+  get worktreePath(): string | undefined { return this._worktreePath; }
 
   /** Top-level goal for goal-driven agents (injected via config). */
   private goal?: string;
@@ -126,6 +136,8 @@ export class AgentProcess {
   private preambleProvider?: PreambleProvider;
   /** Optional callback invoked after each run completes */
   private onRunComplete?: RunCompleteCallback;
+  /** Optional callback invoked live whenever token usage increases during a run */
+  private onTokenUsage?: TokenUsageCallback;
   /** Count of steer interrupts in current lifecycle */
   private _steerCount = 0;
   /** Optional time budget per spawn in ms. Process is killed after this. */
@@ -136,6 +148,22 @@ export class AgentProcess {
   private envProvider?: EnvironmentProvider;
   /** Latest runtime-reported token usage snapshot for the active run. */
   private currentUsage: TokenUsageSnapshot = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  /** Portion of currentUsage already forwarded to onTokenUsage in the active run. */
+  private runReportedUsage: TokenUsageSnapshot = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  /** Running sum of per-step usage snapshots (e.g. agy step_update) during the active run. */
+  private stepUsageAccumulator: TokenUsageSnapshot = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  /** Cumulative token usage across all runs of this agent. */
+  private cumulativeUsage: TokenUsageSnapshot = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  /** Most recent runtime & concrete model resolved for this agent. */
+  private _lastRuntime: AgentRuntime;
+  private _lastModel: string;
+  /** Name of the tool currently executing, if any. */
+  private _currentTool?: string;
+  /** Reason this agent was halted by a circuit breaker, if any. */
+  private _haltedReason?: string;
+  /** Isolated git worktree branch & path assigned to this agent, if any. */
+  private _branch?: string;
+  private _worktreePath?: string;
   /**
    * Most recent session id reported by the underlying CLI (e.g. Claude's
    * `system/init` event). For `idle_cached` agents this is passed back as
@@ -162,6 +190,7 @@ export class AgentProcess {
     timeBudgetMs?: number,
     hasAutonomousWork?: AutonomousWorkChecker,
     envProvider?: EnvironmentProvider,
+    onTokenUsage?: TokenUsageCallback,
   ) {
     // `idle_cached` requires a runtime that can capture a session/conversation id
     // and resume it on the next trigger (`claude --resume` or `agy --conversation`).
@@ -201,6 +230,22 @@ export class AgentProcess {
     this.timeBudgetMs = timeBudgetMs;
     this.hasAutonomousWork = hasAutonomousWork;
     this.envProvider = envProvider;
+    this.onTokenUsage = onTokenUsage;
+    this._lastRuntime = resolveAgentRuntime(definition);
+    this._lastModel = resolveModel(definition.model, this._lastRuntime);
+  }
+
+  /** Record the isolated worktree assignment for telemetry. */
+  setWorktreeInfo(info: { branch: string; path: string } | null): void {
+    this._branch = info?.branch;
+    this._worktreePath = info?.path;
+  }
+
+  /** Stop the agent due to a budget/duration circuit breaker and record the reason. */
+  markHalted(reason: string): void {
+    this._haltedReason = reason;
+    this._currentTool = undefined;
+    this.stop();
   }
 
   /**
@@ -281,11 +326,13 @@ export class AgentProcess {
         }
 
         this._state = 'running';
-        this.currentUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+        this.resetActiveRunTelemetry();
         await this.credentialManager?.ensureFresh();
         const runStartTime = Date.now();
         const runtime = resolveAgentRuntime(this.definition);
         const model = resolveModel(this.definition.model, runtime);
+        this._lastRuntime = runtime;
+        this._lastModel = model;
         const dynamicEnv = this.envProvider
           ? await resolveMaybePromise(this.envProvider(this.definition.name))
           : {};
@@ -309,7 +356,6 @@ export class AgentProcess {
           cwd: this.workDir,
           initialMessage: prompt,
           env: runEnv,
-          runAsUser: process.env['WANMAN_AGENT_USER'],
         });
 
         // Log tool calls so we can see what each agent is doing
@@ -335,7 +381,8 @@ export class AgentProcess {
         if (budgetTimer) clearTimeout(budgetTimer);
         const runDuration = Date.now() - runStartTime;
         this.currentProcess = null;
-        this._state = 'idle';
+        this._currentTool = undefined;
+        this.setIdleIfActive();
         await this.credentialManager?.syncFromFile();
 
         log.info('agent exited', { agent: this.definition.name, exitCode });
@@ -351,6 +398,7 @@ export class AgentProcess {
             inputTokens: this.currentUsage.inputTokens,
             outputTokens: this.currentUsage.outputTokens,
             totalTokens: this.currentUsage.totalTokens,
+            tokensReportedLive: true,
           });
         } catch { /* non-fatal */ }
         this._steerCount = 0;
@@ -408,7 +456,7 @@ export class AgentProcess {
     }
 
     this._state = 'running';
-    this.currentUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    this.resetActiveRunTelemetry();
     const pending = await resolveMaybePromise(this.relay.recv(this.definition.name, 10));
     if (pending.length === 0) {
       this.setIdleIfActive();
@@ -434,6 +482,8 @@ export class AgentProcess {
     const runStartTime = Date.now();
     const runtime = resolveAgentRuntime(this.definition);
     const model = resolveModel(this.definition.model, runtime);
+    this._lastRuntime = runtime;
+    this._lastModel = model;
     const dynamicEnv = this.envProvider
       ? await resolveMaybePromise(this.envProvider(this.definition.name))
       : {};
@@ -502,6 +552,7 @@ export class AgentProcess {
         inputTokens: this.currentUsage.inputTokens,
         outputTokens: this.currentUsage.outputTokens,
         totalTokens: this.currentUsage.totalTokens,
+        tokensReportedLive: true,
       });
     } catch { /* non-fatal */ }
     this._steerCount = 0;
@@ -549,8 +600,9 @@ export class AgentProcess {
         return;
       }
 
-      // Format 1: flat tool_name (common in newer Claude Code)
+      // Format 1: flat tool_name (common in newer Claude Code and Agy ACTIVE tool updates)
       if (typeof event.tool_name === 'string') {
+        this._currentTool = event.tool_name;
         const input = event.tool_input as Record<string, unknown> | undefined;
         const summary = event.tool_name === 'Bash'
           ? (input?.command as string)?.slice(0, 200)
@@ -563,16 +615,23 @@ export class AgentProcess {
         return;
       }
 
+      if (event['tool_done'] === true) {
+        this._currentTool = undefined;
+        return;
+      }
+
       // Format 2: structured message.content blocks
       const msg = event.message as { content?: Array<{ type: string; name?: string; input?: unknown; text?: string; content?: string; is_error?: boolean }> } | undefined;
       if (msg && Array.isArray(msg.content)) {
         for (const block of msg.content) {
           if (block.type === 'tool_use') {
+            if (block.name) this._currentTool = block.name;
             const inputStr = block.input ? JSON.stringify(block.input).slice(0, 200) : '';
             log.info('tool_call', { agent, tool: block.name, input: inputStr });
           } else if (block.type === 'text' && block.text) {
             log.info('assistant_text', { agent, text: block.text.slice(0, 200) });
           } else if (block.type === 'tool_result') {
+            this._currentTool = undefined;
             log.info('tool_result', { agent, error: block.is_error, output: (block.content || '').slice(0, 300) });
           }
         }
@@ -581,6 +640,7 @@ export class AgentProcess {
 
       // Final result (cost, duration, stop reason)
       if (event.type === 'result') {
+        this._currentTool = undefined;
         log.info('result', {
           agent,
           cost_usd: event.cost_usd,
@@ -637,7 +697,6 @@ export class AgentProcess {
       initialMessage: opts.prompt,
       ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
       env: opts.runEnv,
-      runAsUser: process.env['WANMAN_AGENT_USER'],
     });
 
     this.registerEventLogger(this.currentProcess);
@@ -660,13 +719,72 @@ export class AgentProcess {
     const exitCode = await this.currentProcess.wait();
     if (budgetTimer) clearTimeout(budgetTimer);
     this.currentProcess = null;
+    this._currentTool = undefined;
     return exitCode;
   }
 
+  private resetActiveRunTelemetry(): void {
+    this.currentUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    this.runReportedUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    this.stepUsageAccumulator = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    this._currentTool = undefined;
+  }
+
   private updateTokenUsage(event: AgentRunEvent): void {
-    const usage = extractTokenUsage(event);
-    if (!usage) return;
-    this.currentUsage = usage;
+    let nextUsage: TokenUsageSnapshot | null = null;
+
+    if (event.type === 'step_update') {
+      const stepUpdate = event['step_update'] as Record<string, unknown> | undefined;
+      const stepUsage = stepUpdate ? readTokenUsageRecord(stepUpdate['usage']) : null;
+      if (stepUsage) {
+        this.stepUsageAccumulator = {
+          inputTokens: this.stepUsageAccumulator.inputTokens + stepUsage.inputTokens,
+          outputTokens: this.stepUsageAccumulator.outputTokens + stepUsage.outputTokens,
+          totalTokens: this.stepUsageAccumulator.totalTokens + stepUsage.totalTokens,
+        };
+        nextUsage = {
+          inputTokens: Math.max(this.currentUsage.inputTokens, this.stepUsageAccumulator.inputTokens),
+          outputTokens: Math.max(this.currentUsage.outputTokens, this.stepUsageAccumulator.outputTokens),
+          totalTokens: Math.max(this.currentUsage.totalTokens, this.stepUsageAccumulator.totalTokens),
+        };
+      }
+    } else {
+      const usage = extractTokenUsage(event);
+      if (usage) {
+        nextUsage = {
+          inputTokens: Math.max(this.currentUsage.inputTokens, usage.inputTokens),
+          outputTokens: Math.max(this.currentUsage.outputTokens, usage.outputTokens),
+          totalTokens: Math.max(this.currentUsage.totalTokens, usage.totalTokens),
+        };
+      }
+    }
+
+    if (!nextUsage) return;
+    this.currentUsage = nextUsage;
+
+    const deltaInput = Math.max(0, nextUsage.inputTokens - this.runReportedUsage.inputTokens);
+    const deltaOutput = Math.max(0, nextUsage.outputTokens - this.runReportedUsage.outputTokens);
+    const deltaTotal = Math.max(0, nextUsage.totalTokens - this.runReportedUsage.totalTokens);
+    if (deltaInput === 0 && deltaOutput === 0 && deltaTotal === 0) return;
+
+    this.runReportedUsage = {
+      inputTokens: this.runReportedUsage.inputTokens + deltaInput,
+      outputTokens: this.runReportedUsage.outputTokens + deltaOutput,
+      totalTokens: this.runReportedUsage.totalTokens + deltaTotal,
+    };
+    this.cumulativeUsage = {
+      inputTokens: this.cumulativeUsage.inputTokens + deltaInput,
+      outputTokens: this.cumulativeUsage.outputTokens + deltaOutput,
+      totalTokens: this.cumulativeUsage.totalTokens + deltaTotal,
+    };
+
+    try {
+      this.onTokenUsage?.(this.definition.name, {
+        inputTokens: deltaInput,
+        outputTokens: deltaOutput,
+        totalTokens: deltaTotal,
+      });
+    } catch { /* non-fatal */ }
   }
 
   /** Pause the agent — SIGSTOP the current process, prevent respawn. */
@@ -697,6 +815,7 @@ export class AgentProcess {
       this.currentProcess = null;
     }
     this._state = 'stopped';
+    this._currentTool = undefined;
     log.info('stopped', { agent: this.definition.name });
   }
 }

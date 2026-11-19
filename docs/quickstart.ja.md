@@ -12,16 +12,13 @@
   - Claude Code: `@anthropic-ai/claude-code` をグローバルインストールし、ログインフローを実行します（`claude` を実行してプロンプトに従う）。
   - Codex: `@openai/codex` をグローバルインストールし、Codex CLI のドキュメントに従ってサインインします。
   - Antigravity (`agy`): `agy`（`PATH`、`~/.local/bin/agy`、または `WANMAN_AGY_BIN`）を用意し、ホストでの対話ログイン（macOS キーチェーン認証情報、例: service `gemini` / account `antigravity`）、`AGY_ADC_AUTH=true`、または `~/.gemini/antigravity-cli/settings.json` で `"modelProvider": "gemini"` を設定したうえで `GEMINI_API_KEY` を設定して認証します。
-- **任意の既存 git リポジトリ** — エージェントに読み書きさせてよいもの。wanman はそれを隔離されたワークツリーにコピーし、あなたの汚れた作業コピーを変更することはありません。
-
-オプション:
-- クロスラン記憶を使いたい場合は `@sandbank.dev/db9` brain アダプタ — [architecture.ja.md](architecture.ja.md#brain--persistence) を参照してください。
+- **任意の既存 git リポジトリ** — エージェントに読み書きさせてよいもの。wanman は worker ごとに隔離されたワークツリー（`.wanman/worktrees/<worker>`、ブランチ `agent/<worker>`）を作成し、あなたの汚れた作業コピーを変更することはありません。
 
 ## 2. Clone、install、build
 
 ```bash
-git clone git@github.com:chekusu/wanman.git wanman.dev
-cd wanman.dev
+git clone https://github.com/Kaiser233/wanman.git wanman
+cd wanman
 pnpm install
 pnpm build
 ```
@@ -47,18 +44,20 @@ wanman takeover .
 
 起こること:
 1. wanman はローカル状態を保持するために、リポジトリ内に `.wanman/` を作成します。
-2. 現在の `HEAD` から `.wanman/worktree/` を展開し、エージェントがあなたの汚れた作業ツリーではなくクリーンなスナップショットに対して操作するようにします。
+2. 現在の `HEAD` から `.wanman/worktree/` を展開し、デフォルトで各コード編集 worker ごとに `.wanman/worktrees/<worker>`（ブランチ `agent/<worker>`）を作成します。
 3. 自動選択された `127.0.0.1` のポートでスーパーバイザーを起動し、ヘルス確認を待ちます。
-4. 隔離された `.wanman/home/` 以下でエージェント（デフォルトでは Claude Code サブプロセス）を spawn し、シェルプロファイルの変更があなたの実際の `$HOME` に漏れないようにします。
-5. takeover はフォアグラウンドに留まり、エージェントの活動をストリーミング表示します。
+4. 隔離された `.wanman/home/` 以下でエージェント（デフォルトでは Antigravity `agy` サブプロセス）を spawn し、シェルプロファイルの変更があなたの実際の `$HOME` に漏れないようにします。
+5. takeover はライブ TUI（runtime/model、実行中ツール、トークン予算バー、ブランチ）を表示し、予算超過時には全エージェントを停止して構造化レポートを出力します。
 
-`--runtime` で runtime を選択できます（モデルや推論強度の指定も可能）：
+`--runtime` や予算・ループ数の指定例:
 
 ```bash
-wanman takeover . --runtime claude   # デフォルト
+wanman takeover .                                        # デフォルト: agy + 独立ワークツリー
+wanman takeover . --agy-model gemini-3.8-flash-low --agy-speed fast
+wanman takeover . --loops 10 --max-tokens 500000 --max-duration 1800
+wanman takeover . --runtime claude
 wanman takeover . --runtime codex
-wanman takeover . --runtime agy      # エイリアス: atg, antigravity
-wanman takeover . --runtime agy --agy-model gemini-3.8-flash-low --agy-effort high
+wanman takeover . --no-worktree-isolation                # 単一ワークツリーを共有
 ```
 
 ## 4. matrix と対話する

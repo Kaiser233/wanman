@@ -20,7 +20,6 @@ import { taskCommand } from './commands/task.js';
 import { initiativeCommand } from './commands/initiative.js';
 import { capsuleCommand } from './commands/capsule.js';
 import { artifactCommand } from './commands/artifact.js';
-import { hypothesisCommand } from './commands/hypothesis.js';
 
 export const HELP = `wanman — Agent Matrix CLI
 
@@ -48,9 +47,6 @@ Usage:
   wanman artifact put [flags] '<json>'     Store structured artifact
   wanman artifact list [--agent a]         List artifacts
   wanman artifact get <id>                 Get artifact with content
-  wanman hypothesis create <title> [flags] Create a hypothesis
-  wanman hypothesis list [--status s]      List hypotheses
-  wanman hypothesis update <id> --status s Update hypothesis
   wanman run <goal> [options]              Start agent matrix with a goal
   wanman takeover <path> [options]         Take over an existing git repo
   wanman watch                             Watch supervisor/runtime activity
@@ -91,9 +87,6 @@ export async function run(command: string | undefined, args: string[]): Promise<
         break;
       case 'artifact':
         await artifactCommand(args);
-        break;
-      case 'hypothesis':
-        await hypothesisCommand(args);
         break;
       case 'run': {
         const { runCommand } = await import('./commands/run.js')

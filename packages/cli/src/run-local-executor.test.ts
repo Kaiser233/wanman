@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { createDefaultRunOptions } from '@wanman/host-sdk'
 import type { RunLocalSupervisorSessionParams } from './local-supervisor-session.js'
 import { runLocalExecution, type LocalRunExecutorParams } from './run-local-executor.js'
 
@@ -12,11 +13,11 @@ function makeParams(overrides: Partial<LocalRunExecutorParams> = {}): LocalRunEx
   return {
     goal: 'ship',
     opts: {
+      ...createDefaultRunOptions(),
       loops: 1,
       pollInterval: 0,
       output: '/tmp/out',
       keep: false,
-      noBrain: true,
       infinite: false,
       errorLimit: 3,
     },
@@ -78,8 +79,8 @@ describe('runLocalExecution', () => {
       runId: 'run-1',
       workspaceRoot: '/tmp/run/agents',
     }))
-    expect(params.downloadDeliverables).toHaveBeenCalledWith(expect.any(Object), '/tmp/out', '/tmp/run/agents', undefined)
-    expect(params.downloadRepoPatch).toHaveBeenCalledWith('/tmp/out', '/tmp/repo', undefined)
+    expect(params.downloadDeliverables).toHaveBeenCalledWith(expect.any(Object), '/tmp/out', '/tmp/run/agents', 'run-1')
+    expect(params.downloadRepoPatch).toHaveBeenCalledWith('/tmp/out', '/tmp/repo', 'run-1')
     expect(params.localLayout.cleanup).toHaveBeenCalled()
   })
 

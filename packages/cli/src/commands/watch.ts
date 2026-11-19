@@ -1,17 +1,12 @@
 /**
- * `wanman watch` — Real-time loop event observer.
- *
- * Two modes:
- * 1. Live: tail -f the NDJSON file from a running supervisor
- * 2. History: query db9 loop_events table for past runs
+ * `wanman watch` — Local loop event observer (NDJSON).
  */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { execSync } from 'node:child_process'
 
 interface WatchOptions {
-  /** Path to NDJSON file (live mode) */
+  /** Path to NDJSON file */
   file?: string
   /** Agent name filter */
   agent?: string
@@ -21,12 +16,6 @@ interface WatchOptions {
   classification?: string
   /** Show last N events */
   tail: number
-  /** History mode: query db9 */
-  history: boolean
-  /** Run ID for history mode */
-  runId?: string
-  /** db9 database name */
-  dbName?: string
 }
 
 interface LoopEventRecord {
@@ -40,7 +29,7 @@ interface LoopEventRecord {
 }
 
 function parseArgs(args: string[]): WatchOptions {
-  const opts: WatchOptions = { tail: 20, history: false }
+  const opts: WatchOptions = { tail: 20 }
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -49,9 +38,6 @@ function parseArgs(args: string[]): WatchOptions {
       case '--type': opts.type = args[++i]; break
       case '--classification': opts.classification = args[++i]; break
       case '--tail': opts.tail = parseInt(args[++i]!, 10); break
-      case '--history': opts.history = true; break
-      case '--run': opts.runId = args[++i]; break
-      case '--db': opts.dbName = args[++i]; break
     }
   }
 
@@ -82,6 +68,10 @@ function formatEvent(event: LoopEventRecord): string {
       return `${ts}  L${loop}  ${type}  📬 ${event.agent}: ${event.pendingMessages} pending`
     case 'artifact.created':
       return `${ts}  L${loop}  ${type}  📦 ${event.agent}/${event.kind}${event.path ? ` → ${event.path}` : ''}`
+    case 'agent.budget_exceeded':
+      return `${ts}  L${loop}  ${type}  ⛔ ${event.agent} exceeded token budget (${event.tokens}/${event.budget})`
+    case 'run.halted':
+      return `${ts}  L${loop}  ${type}  ⛔ run halted (${event.reason})`
     default:
       return `${ts}  L${loop}  ${type}  ${JSON.stringify(event).slice(0, 80)}`
   }
@@ -133,7 +123,6 @@ export function watchFile(filePath: string, opts: WatchOptions): void {
     console.log(formatEvent(e))
   }
 
-  // Summary
   const classified = events.filter(e => e.type === 'loop.classified')
   if (classified.length > 0) {
     const counts: Record<string, number> = {}
@@ -151,43 +140,7 @@ export function watchFile(filePath: string, opts: WatchOptions): void {
   }
 }
 
-/** Query db9 for historical events */
-export function watchHistory(opts: WatchOptions): void {
-  const dbName = opts.dbName || 'wanman-brain-local'
-
-  let where = 'WHERE 1=1'
-  if (opts.runId) where += ` AND run_id = '${opts.runId}'`
-  if (opts.agent) where += ` AND agent = '${opts.agent}'`
-  if (opts.type) where += ` AND event_type = '${opts.type}'`
-  if (opts.classification) where += ` AND classification = '${opts.classification}'`
-
-  const sql = `SELECT run_id, loop_number, event_type, classification, agent, created_at FROM loop_events ${where} ORDER BY created_at DESC LIMIT ${opts.tail}`
-
-  try {
-    const dbId = execSync(
-      `db9 --json db list 2>/dev/null | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8'));const f=d.find(x=>x.name==='${dbName}');if(f)process.stdout.write(f.id)"`,
-      { encoding: 'utf-8', timeout: 10_000 },
-    ).trim()
-
-    if (!dbId) {
-      console.error(`Database not found: ${dbName}`)
-      process.exit(1)
-    }
-
-    const out = execSync(`db9 db sql ${dbId} -q "${sql}"`, {
-      encoding: 'utf-8',
-      timeout: 15_000,
-    })
-    console.log(`wanman watch --history (db: ${dbName})`)
-    console.log('─'.repeat(80))
-    console.log(out)
-  } catch (err) {
-    console.error(`Failed to query db9: ${err instanceof Error ? err.message : String(err)}`)
-    process.exit(1)
-  }
-}
-
-const WATCH_HELP = `wanman watch — Real-time loop event observer
+const WATCH_HELP = `wanman watch — Local loop event observer
 
 Usage:
   wanman watch [options]
@@ -198,9 +151,6 @@ Options:
   --type <event_type>    Filter by event type (loop.tick, loop.classified, agent.spawned, etc.)
   --classification <c>   Filter classified events (productive, idle, blocked, backlog_stuck, error)
   --tail <n>             Show last N events (default: 20)
-  --history              Query db9 instead of local file
-  --run <run_id>         Filter by run ID (history mode)
-  --db <name>            db9 database name (default: wanman-brain-local)
 `
 
 export async function watchCommand(args: string[]): Promise<void> {
@@ -210,11 +160,6 @@ export async function watchCommand(args: string[]): Promise<void> {
   }
 
   const opts = parseArgs(args)
-
-  if (opts.history) {
-    watchHistory(opts)
-  } else {
-    const file = opts.file || path.join(process.cwd(), 'deliverables', 'loop-events.ndjson')
-    watchFile(file, opts)
-  }
+  const file = opts.file || path.join(process.cwd(), 'deliverables', 'loop-events.ndjson')
+  watchFile(file, opts)
 }

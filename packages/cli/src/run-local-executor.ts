@@ -28,7 +28,6 @@ export interface LocalRunObservationParams {
   spec: ProjectRunSpec
   runId: string
   workspaceRoot: string
-  brainName?: string
   hooks?: ExecutionHooks
   shouldStop: () => boolean
 }
@@ -40,11 +39,10 @@ export interface LocalRunExecutorParams {
   runId: string
   localLayout: LocalRunLayout
   runtime: LocalRunRuntimeOptions
-  brainName?: string
   hooks?: ExecutionHooks
   observeExecution(params: LocalRunObservationParams): Promise<unknown>
-  downloadDeliverables(runtime: RuntimeClient, outputDir: string, workspaceRoot: string, brainName?: string): Promise<void>
-  downloadRepoPatch(outputDir: string, repoRoot: string, brainName?: string): Promise<void>
+  downloadDeliverables(runtime: RuntimeClient, outputDir: string, workspaceRoot: string, runId?: string): Promise<void>
+  downloadRepoPatch(outputDir: string, repoRoot: string, runId?: string): Promise<void>
 }
 
 export async function runLocalExecution(params: LocalRunExecutorParams): Promise<void> {
@@ -55,7 +53,6 @@ export async function runLocalExecution(params: LocalRunExecutorParams): Promise
     runId,
     localLayout,
     runtime,
-    brainName,
     hooks,
   } = params
 
@@ -73,6 +70,11 @@ export async function runLocalExecution(params: LocalRunExecutorParams): Promise
       codexReasoningEffort: runtime.codexReasoningEffort,
       ...(runtime.agyModel ? { agyModel: runtime.agyModel } : {}),
       ...(runtime.agyEffort ? { agyEffort: runtime.agyEffort } : {}),
+      maxTokens: opts.maxTokens,
+      ...(opts.agentMaxTokens > 0 ? { agentMaxTokens: opts.agentMaxTokens } : {}),
+      maxDurationSec: opts.maxDurationSec,
+      spawnTimeoutSec: opts.spawnTimeoutSec,
+      worktreeIsolation: opts.worktreeIsolation,
     },
     keep: opts.keep,
     signalMode: 'exit_process',
@@ -89,8 +91,8 @@ export async function runLocalExecution(params: LocalRunExecutorParams): Promise
     onError: async (err, { runtime: supervisorRuntime }) => {
       console.error(`\n  Error: ${err instanceof Error ? err.message : String(err)}`)
       process.exitCode = 1
-      try { await params.downloadDeliverables(supervisorRuntime, opts.output, localLayout.workspaceRoot, brainName) } catch { /* best-effort */ }
-      try { await params.downloadRepoPatch(opts.output, localLayout.gitRoot, brainName) } catch { /* best-effort */ }
+      try { await params.downloadDeliverables(supervisorRuntime, opts.output, localLayout.workspaceRoot, runId) } catch { /* best-effort */ }
+      try { await params.downloadRepoPatch(opts.output, localLayout.gitRoot, runId) } catch { /* best-effort */ }
     },
     onStopped: (_context, reason) => {
       localLayout.cleanup()
@@ -110,13 +112,12 @@ export async function runLocalExecution(params: LocalRunExecutorParams): Promise
         spec,
         runId,
         workspaceRoot: localLayout.workspaceRoot,
-        brainName,
         hooks,
         shouldStop: () => isShuttingDown(),
       })
 
-      await params.downloadDeliverables(supervisorRuntime, opts.output, localLayout.workspaceRoot, brainName)
-      await params.downloadRepoPatch(opts.output, localLayout.gitRoot, brainName).catch(() => undefined)
+      await params.downloadDeliverables(supervisorRuntime, opts.output, localLayout.workspaceRoot, runId)
+      await params.downloadRepoPatch(opts.output, localLayout.gitRoot, runId).catch(() => undefined)
     },
   })
 }

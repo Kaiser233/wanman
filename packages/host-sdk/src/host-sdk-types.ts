@@ -14,7 +14,7 @@ export interface WanmanHostTakeoverOptions {
   agyModel?: string
   agyEffort?: AgyEffort
   githubToken?: string
-  enableBrain?: boolean
+  worktreeIsolation?: boolean
 }
 
 export type WanmanHostRunInvocation = RunOptions | WanmanHostRunOptions

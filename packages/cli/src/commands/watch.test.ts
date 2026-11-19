@@ -2,15 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { execSync } from 'node:child_process'
 import { watchFile, watchCommand } from './watch.js'
-
-vi.mock('node:child_process', async () => {
-  const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process')
-  return { ...actual, execSync: vi.fn() }
-})
-
-const mockExecSync = vi.mocked(execSync)
 
 let tmpDir: string
 let ndjsonPath: string
@@ -38,7 +30,6 @@ beforeEach(() => {
   mkdirSync(tmpDir, { recursive: true })
   ndjsonPath = join(tmpDir, 'loop-events.ndjson')
   writeFileSync(ndjsonPath, sampleEvents.map(e => JSON.stringify(e)).join('\n') + '\n')
-  mockExecSync.mockReset()
   vi.spyOn(console, 'log').mockImplementation(() => {})
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined) => {
@@ -53,7 +44,7 @@ afterEach(() => {
 
 describe('watchFile', () => {
   it('should display events from NDJSON file', () => {
-    watchFile(ndjsonPath, { tail: 50, history: false })
+    watchFile(ndjsonPath, { tail: 50 })
 
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('15 events'))
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('productive'))
@@ -63,38 +54,38 @@ describe('watchFile', () => {
   })
 
   it('should respect --tail limit', () => {
-    watchFile(ndjsonPath, { tail: 3, history: false })
+    watchFile(ndjsonPath, { tail: 3 })
 
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('3 events'))
   })
 
   it('should filter by agent', () => {
-    watchFile(ndjsonPath, { tail: 50, history: false, agent: 'finance' })
+    watchFile(ndjsonPath, { tail: 50, agent: 'finance' })
 
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('1 events'))
   })
 
   it('should filter by classification', () => {
-    watchFile(ndjsonPath, { tail: 50, history: false, classification: 'productive' })
+    watchFile(ndjsonPath, { tail: 50, classification: 'productive' })
 
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('2 events'))
   })
 
   it('should filter backlog_stuck classification for operators', () => {
-    watchFile(ndjsonPath, { tail: 50, history: false, classification: 'backlog_stuck' })
+    watchFile(ndjsonPath, { tail: 50, classification: 'backlog_stuck' })
 
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('1 events'))
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('📬 backlog_stuck'))
   })
 
   it('should filter by event type', () => {
-    watchFile(ndjsonPath, { tail: 50, history: false, type: 'task.transition' })
+    watchFile(ndjsonPath, { tail: 50, type: 'task.transition' })
 
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('1 events'))
   })
 
   it('should show summary with productive rate and backlog_stuck counts', () => {
-    watchFile(ndjsonPath, { tail: 50, history: false })
+    watchFile(ndjsonPath, { tail: 50 })
 
     expect(console.log).toHaveBeenCalledWith(
       'Summary: 5 loops | 2 productive (40%) | 1 idle | 1 blocked | 1 backlog_stuck | 0 error',
@@ -104,7 +95,7 @@ describe('watchFile', () => {
   it('should handle empty file', () => {
     writeFileSync(ndjsonPath, '')
 
-    watchFile(ndjsonPath, { tail: 50, history: false })
+    watchFile(ndjsonPath, { tail: 50 })
 
     expect(console.log).toHaveBeenCalledWith('No events yet.')
   })
@@ -112,18 +103,26 @@ describe('watchFile', () => {
   it('should handle malformed lines gracefully', () => {
     writeFileSync(ndjsonPath, '{"type":"loop.tick","runId":"r","loop":1,"timestamp":"T"}\nnot json\n{"type":"loop.tick","runId":"r","loop":2,"timestamp":"T"}\n')
 
-    watchFile(ndjsonPath, { tail: 50, history: false })
+    watchFile(ndjsonPath, { tail: 50 })
 
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('2 events'))
   })
 
   it('should surface file-not-found errors for live mode', () => {
-    expect(() => watchFile(join(tmpDir, 'missing.ndjson'), { tail: 50, history: false })).toThrow('process.exit:1')
+    expect(() => watchFile(join(tmpDir, 'missing.ndjson'), { tail: 50 })).toThrow('process.exit:1')
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('File not found'))
   })
 
-  it('should format all event types correctly', () => {
-    watchFile(ndjsonPath, { tail: 50, history: false })
+  it('should format all event types including budget circuit breakers', () => {
+    writeFileSync(
+      ndjsonPath,
+      [
+        ...sampleEvents,
+        { type: 'agent.budget_exceeded', runId: 'run-1', loop: 5, agent: 'dev', tokensUsed: 50000, budget: 40000, timestamp: '2026-03-21T10:01:02Z' },
+        { type: 'run.halted', runId: 'run-1', loop: 5, reason: 'token_budget_exceeded', detail: '100k/100k', timestamp: '2026-03-21T10:01:03Z' },
+      ].map(e => JSON.stringify(e)).join('\n') + '\n',
+    )
+    watchFile(ndjsonPath, { tail: 50 })
 
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('🚀'))
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('📋'))
@@ -132,6 +131,8 @@ describe('watchFile', () => {
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('🚫'))
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('✅'))
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('💤'))
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('⛔'))
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('token_budget_exceeded'))
   })
 
   it('should format unknown classifications and event types defensively', () => {
@@ -143,7 +144,7 @@ describe('watchFile', () => {
       ].join('\n') + '\n',
     )
 
-    watchFile(ndjsonPath, { tail: 50, history: false })
+    watchFile(ndjsonPath, { tail: 50 })
 
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('❓ mystery'))
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('"type":"agent.custom"'))
@@ -155,7 +156,6 @@ describe('watchCommand', () => {
     await watchCommand(['--help'])
 
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('backlog_stuck'))
-    expect(mockExecSync).not.toHaveBeenCalled()
   })
 
   it('uses the default deliverables path in live mode', async () => {
@@ -170,42 +170,9 @@ describe('watchCommand', () => {
     cwdSpy.mockRestore()
   })
 
-  it('queries history mode with operator-facing filters', async () => {
-    mockExecSync
-      .mockReturnValueOnce('db-123')
-      .mockReturnValueOnce('run-1 | 5 | loop.classified | backlog_stuck | feedback | 2026-03-21T10:01:01Z\n')
+  it('supports filtering by --file and --agent', async () => {
+    await watchCommand(['--file', ndjsonPath, '--agent', 'finance'])
 
-    await watchCommand(['--history', '--tail', '7', '--run', 'run-1', '--agent', 'feedback', '--classification', 'backlog_stuck'])
-
-    expect(mockExecSync).toHaveBeenNthCalledWith(
-      1,
-      expect.stringContaining("x.name==='wanman-brain-local'"),
-      expect.objectContaining({ encoding: 'utf-8', timeout: 10_000 }),
-    )
-    expect(mockExecSync).toHaveBeenNthCalledWith(
-      2,
-      expect.stringContaining("SELECT run_id, loop_number, event_type, classification, agent, created_at FROM loop_events WHERE 1=1 AND run_id = 'run-1' AND agent = 'feedback' AND classification = 'backlog_stuck' ORDER BY created_at DESC LIMIT 7"),
-      expect.objectContaining({ encoding: 'utf-8', timeout: 15_000 }),
-    )
-    expect(console.log).toHaveBeenCalledWith('wanman watch --history (db: wanman-brain-local)')
-    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('backlog_stuck'))
-  })
-
-  it('fails clearly when the history database is missing', async () => {
-    mockExecSync.mockReturnValueOnce('')
-
-    await expect(watchCommand(['--history', '--db', 'missing-db'])).rejects.toThrow('process.exit:1')
-    expect(console.error).toHaveBeenCalledWith('Database not found: missing-db')
-  })
-
-  it('fails clearly when the history query throws', async () => {
-    mockExecSync
-      .mockReturnValueOnce('db-123')
-      .mockImplementationOnce(() => {
-        throw new Error('db exploded')
-      })
-
-    await expect(watchCommand(['--history'])).rejects.toThrow('process.exit:1')
-    expect(console.error).toHaveBeenCalledWith('Failed to query db9: db exploded')
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('1 events'))
   })
 })

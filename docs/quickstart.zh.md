@@ -12,16 +12,13 @@
   - Claude Code：全局安装 `@anthropic-ai/claude-code` 并运行登录流程（执行 `claude` 然后按提示操作）。
   - Codex：全局安装 `@openai/codex`，按 Codex CLI 文档完成登录。
   - Antigravity (`agy`)：安装 `agy`（位于 `PATH`、`~/.local/bin/agy`，或通过 `WANMAN_AGY_BIN` 指定）并完成认证：在宿主机交互登录（写入 macOS 钥匙串凭证，如 service `gemini` / account `antigravity`）、设置 `AGY_ADC_AUTH=true`，或在 `~/.gemini/antigravity-cli/settings.json` 中配置 `"modelProvider": "gemini"` 并设置 `GEMINI_API_KEY`。
-- **任意现有的 git 仓库**，你愿意让 agent 在里面读取和涂写。wanman 会把它复制到一个隔离的 worktree，从不会修改你未提交的工作区。
-
-可选：
-- `@sandbank.dev/db9` brain 适配器，用于获得跨 run 的记忆 —— 见 [architecture.zh.md](architecture.zh.md#brain--persistence)。
+- **任意现有的 git 仓库**，你愿意让 agent 在里面读取和修改。wanman 会为每个写码 worker 创建独立的 git worktree（`.wanman/worktrees/<worker>`，分支 `agent/<worker>`），从不会修改你未提交的工作区。
 
 ## 2. Clone、安装、构建
 
 ```bash
-git clone git@github.com:chekusu/wanman.git wanman.dev
-cd wanman.dev
+git clone https://github.com/Kaiser233/wanman.git wanman
+cd wanman
 pnpm install
 pnpm build
 ```
@@ -47,18 +44,20 @@ wanman takeover .
 
 过程如下：
 1. wanman 在仓库内创建 `.wanman/` 来保存本地状态。
-2. 它从当前 `HEAD` 物化出 `.wanman/worktree/`，这样 agent 操作的是一个干净的快照，而不是你未提交的工作区。
+2. 它从当前 `HEAD` 物化出 `.wanman/worktree/`，并默认在 `.wanman/worktrees/<worker>` 下为每个写码 worker（`dev`、`dev-*`、`devops`）创建独立分支 `agent/<worker>`。
 3. 它在自动挑选的 `127.0.0.1` 端口上启动一个 supervisor，并等待健康检查通过。
-4. 它在一个隔离的 `.wanman/home/` 下派生 agent（默认是 Claude Code 子进程），让 shell 配置文件的改动不会污染你真实的 `$HOME`。
-5. takeover 会保持前台运行，实时流式输出 agent 活动。
+4. 它在一个隔离的 `.wanman/home/` 下派生 agent（默认使用 Antigravity `agy` 子进程），让 shell 配置文件的改动不会污染你真实的 `$HOME`。
+5. takeover 实时渲染增强 TUI 仪表盘（展示 runtime/model、当前工具、Token 预算进度条、时长上限与分支状态）；当触发 Token 或时长熔断时自动停止所有 agent 并输出结构化停机报告。
 
-用 `--runtime` 选择 runtime（以及可选的模型 / 推理强度参数）：
+可通过参数选择 runtime、有限轮次或硬熔断预算：
 
 ```bash
-wanman takeover . --runtime claude   # default
+wanman takeover .                                        # 默认：agy + 独立 worktree
+wanman takeover . --agy-model gemini-3.8-flash-low --agy-speed fast
+wanman takeover . --loops 10 --max-tokens 500000 --max-duration 1800
+wanman takeover . --runtime claude
 wanman takeover . --runtime codex
-wanman takeover . --runtime agy      # 别名：atg, antigravity
-wanman takeover . --runtime agy --agy-model gemini-3.8-flash-low --agy-effort high
+wanman takeover . --no-worktree-isolation                # 共享单一 worktree
 ```
 
 ## 4. 与 matrix 对话

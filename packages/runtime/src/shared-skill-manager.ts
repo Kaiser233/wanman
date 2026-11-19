@@ -2,9 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { BrainManager } from './brain-manager.js'
 import { createLogger } from './logger.js'
-import { esc } from './sql-escape.js'
 
 const log = createLogger('shared-skill-manager')
 
@@ -17,8 +15,7 @@ const log = createLogger('shared-skill-manager')
  *   3. Sibling of `sharedSkillsDir` (e.g. `<parent>/skill-snapshots` next to
  *      `<parent>/shared-skills`) iff that sibling is writable by the
  *      current process.
- *   4. `${os.tmpdir()}/wanman-skill-snapshots` — always writable, safe for
- *      unprivileged OSS consumers.
+ *   4. `${os.tmpdir()}/wanman-skill-snapshots` — always writable.
  */
 function resolveSnapshotsRoot(sharedSkillsDir: string, explicit?: string): string {
   if (explicit) return explicit
@@ -41,7 +38,7 @@ function resolveSnapshotsRoot(sharedSkillsDir: string, explicit?: string): strin
 }
 
 export type ActivationScope = 'task' | 'loop' | 'run'
-export type SharedSkillSource = 'builtin' | 'db' | 'project' | 'candidate'
+export type SharedSkillSource = 'builtin' | 'project' | 'candidate'
 
 export interface ResolvedSharedSkill {
   skillName: string
@@ -70,19 +67,11 @@ interface FilesystemSkill {
   content: string
 }
 
-interface SharedSkillVersionRow {
-  version: number
-  content: string
-  status: string
-}
-
 export class SharedSkillManager {
-  private brainManager: BrainManager | null
-  private sharedSkillsDir: string
-  private snapshotsRoot: string
+  private readonly sharedSkillsDir: string
+  private readonly snapshotsRoot: string
 
-  constructor(brainManager: BrainManager | null, sharedSkillsDir: string, snapshotsRoot?: string) {
-    this.brainManager = brainManager
+  constructor(sharedSkillsDir: string, snapshotsRoot?: string) {
     this.sharedSkillsDir = sharedSkillsDir
     this.snapshotsRoot = resolveSnapshotsRoot(sharedSkillsDir, snapshotsRoot)
   }
@@ -106,62 +95,6 @@ export class SharedSkillManager {
     }
 
     return skills.sort((left, right) => left.name.localeCompare(right.name))
-  }
-
-  async syncFilesystemSkills(): Promise<void> {
-    if (!this.brainManager?.isInitialized) return
-
-    for (const skill of this.listFilesystemSkills()) {
-      await this.brainManager.executeSQL(`
-        INSERT INTO shared_skills (name, title, category, owner, description, stability)
-        VALUES (
-          '${esc(skill.name)}',
-          '${esc(skill.name)}',
-          'process',
-          'human',
-          'Imported from WANMAN_SHARED_SKILLS',
-          'stable'
-        )
-        ON CONFLICT (name) DO NOTHING
-      `)
-
-      const versions = await this.readSkillVersions(skill.name)
-      const matchingVersion = versions.find(version => version.content === skill.content)
-
-      if (matchingVersion) {
-        if (matchingVersion.status !== 'active') {
-          await this.brainManager.executeSQL(
-            `UPDATE shared_skill_versions SET status = 'deprecated' WHERE skill_name = '${esc(skill.name)}' AND status = 'active'`
-          )
-          await this.brainManager.executeSQL(
-            `UPDATE shared_skill_versions SET status = 'active' WHERE skill_name = '${esc(skill.name)}' AND version = ${matchingVersion.version}`
-          )
-        }
-        continue
-      }
-
-      const nextVersion = (versions[0]?.version ?? 0) + 1
-      await this.brainManager.executeSQL(
-        `UPDATE shared_skill_versions SET status = 'deprecated' WHERE skill_name = '${esc(skill.name)}' AND status = 'active'`
-      )
-      await this.brainManager.executeSQL(`
-        INSERT INTO shared_skill_versions (
-          skill_name,
-          version,
-          content,
-          status,
-          created_by,
-          change_summary
-        ) VALUES (
-          '${esc(skill.name)}',
-          ${nextVersion},
-          '${esc(skill.content)}',
-          'active',
-          'system',
-          'Imported from filesystem baseline'
-        )
-      `)
-    }
   }
 
   verifyActivationInfrastructure(): void {
@@ -197,8 +130,6 @@ export class SharedSkillManager {
       return null
     }
 
-    await this.syncFilesystemSkills()
-
     const id = `snapshot-${randomUUID()}`
     const materializedPath = path.join(this.snapshotsRoot, id)
     fs.mkdirSync(materializedPath, { recursive: true })
@@ -209,42 +140,10 @@ export class SharedSkillManager {
       fs.cpSync(skill.dir, skillDir, { recursive: true })
       resolvedSkills.push({
         skillName: skill.name,
-        version: await this.resolveSkillVersion(skill.name, skill.content),
+        version: 1,
         path: path.join(skillDir, 'SKILL.md'),
         source: 'builtin',
       })
-    }
-
-    if (this.brainManager?.isInitialized) {
-      await this.brainManager.executeSQL(`
-        INSERT INTO skill_activation_snapshots (
-          id,
-          run_id,
-          loop_number,
-          task_id,
-          agent,
-          execution_profile,
-          bundle_id,
-          bundle_version,
-          activation_scope,
-          resolved_skills,
-          materialized_path,
-          activated_by
-        ) VALUES (
-          '${esc(id)}',
-          '${esc(input.runId)}',
-          ${input.loopNumber ?? 'NULL'},
-          ${sqlTextOrNull(input.taskId)},
-          '${esc(input.agent)}',
-          ${sqlTextOrNull(input.executionProfile)},
-          ${sqlTextOrNull(input.bundleId)},
-          ${input.bundleVersion ?? 'NULL'},
-          '${input.activationScope}',
-          '${esc(JSON.stringify(resolvedSkills))}'::jsonb,
-          '${esc(materializedPath)}',
-          '${input.activatedBy ?? 'system'}'
-        )
-      `)
     }
 
     log.info('materialized activation snapshot', {
@@ -276,25 +175,4 @@ export class SharedSkillManager {
       fs.rmSync(snapshot.materializedPath, { recursive: true, force: true })
     }
   }
-
-  private async readSkillVersions(skillName: string): Promise<SharedSkillVersionRow[]> {
-    if (!this.brainManager?.isInitialized) return []
-    const rows = await this.brainManager.executeSQL(
-      `SELECT version, content, status FROM shared_skill_versions WHERE skill_name = '${esc(skillName)}' ORDER BY version DESC`
-    ) as Array<Record<string, unknown>>
-    return rows.map(row => ({
-      version: Number(row.version),
-      content: String(row.content ?? ''),
-      status: String(row.status ?? ''),
-    }))
-  }
-
-  private async resolveSkillVersion(skillName: string, content: string): Promise<number> {
-    const versions = await this.readSkillVersions(skillName)
-    return versions.find(version => version.content === content)?.version ?? 1
-  }
-}
-
-function sqlTextOrNull(value: string | undefined): string {
-  return value ? `'${esc(value)}'` : 'NULL'
 }

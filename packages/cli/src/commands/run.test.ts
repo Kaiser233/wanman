@@ -87,18 +87,20 @@ describe('parseOptions', () => {
   it('should parse --runtime', () => {
     const { opts } = parseOptions(['my goal', '--runtime', 'codex'])
     expect(opts.runtime).toBe('codex')
+    expect(parseOptions(['my goal', '--runtime', 'claude']).opts.runtime).toBe('claude')
     expect(parseOptions(['my goal', '--runtime', 'agy']).opts.runtime).toBe('agy')
     expect(parseOptions(['my goal', '--runtime', 'atg']).opts.runtime).toBe('agy')
     expect(parseOptions(['my goal', '--runtime', 'antigravity']).opts.runtime).toBe('agy')
-    expect(parseOptions(['my goal', '--runtime', 'unknown']).opts.runtime).toBe('claude')
+    expect(parseOptions(['my goal', '--runtime', 'unknown']).opts.runtime).toBe('agy')
   })
 
-  it('should parse --agy-model and --agy-effort', () => {
+  it('should parse --agy-model, --agy-effort, and --agy-speed', () => {
     const { opts } = parseOptions(['my goal', '--runtime', 'agy', '--agy-model', 'gemini-3.8-flash-low', '--agy-effort', 'max'])
     expect(opts.runtime).toBe('agy')
     expect(opts.agyModel).toBe('gemini-3.8-flash-low')
     expect(opts.agyEffort).toBe('max')
     expect(parseOptions(['my goal', '--agy-effort', 'deep']).opts.agyEffort).toBe('high')
+    expect(parseOptions(['my goal', '--agy-speed', 'fast']).opts.agyEffort).toBe('low')
     expect(() => parseOptions(['my goal', '--agy-effort', 'invalid'])).toThrow(/Invalid agy effort/)
   })
 
@@ -117,9 +119,23 @@ describe('parseOptions', () => {
     expect(opts.codexReasoningEffort).toBe('medium')
   })
 
-  it('should parse --no-brain', () => {
-    const { opts } = parseOptions(['my goal', '--no-brain'])
-    expect(opts.noBrain).toBe(true)
+  it('should parse budget and worktree isolation flags', () => {
+    const { opts } = parseOptions([
+      'my goal',
+      '--max-tokens', '250000',
+      '--agent-max-tokens', '50000',
+      '--max-duration', '1800',
+      '--spawn-timeout', '300',
+      '--worktree-isolation',
+    ])
+    expect(opts.maxTokens).toBe(250_000)
+    expect(opts.agentMaxTokens).toBe(50_000)
+    expect(opts.maxDurationSec).toBe(1800)
+    expect(opts.spawnTimeoutSec).toBe(300)
+    expect(opts.worktreeIsolation).toBe(true)
+
+    expect(parseOptions(['my goal', '--no-worktree-isolation']).opts.worktreeIsolation).toBe(false)
+    expect(parseOptions(['my goal', '--max-tokens', '0']).opts.maxTokens).toBe(0)
   })
 
   it('should parse --keep', () => {

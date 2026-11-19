@@ -4,22 +4,18 @@
  * Creates a real Supervisor (SQLite in-memory), wires LoopEventBus + LoopLogger + Heartbeat,
  * simulates multi-loop execution with RPC calls (task create → update → artifact put),
  * and verifies the entire observability chain end-to-end:
- *   RPC → Supervisor event emission → EventBus → LoopLogger dual-write → NDJSON + db9
+ *   RPC → Supervisor event emission → EventBus → LoopLogger → local NDJSON
  *   + Heartbeat file + LoopSnapshot classification
  *
  * This test is designed to uncover real design issues in the observability pipeline.
  *
  * Run: pnpm -F @wanman/runtime test e2e-loop-pipeline
- * With db9: DB9_E2E=1 pnpm -F @wanman/runtime test e2e-loop-pipeline
  */
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { existsSync, readFileSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { execSync } from 'node:child_process'
-import type { AgentMatrixConfig, JsonRpcRequest } from '@wanman/core'
-import { RPC_METHODS } from '@wanman/core'
 
 // ── Mocks (minimal — only what we can't run for real) ──
 
@@ -45,11 +41,6 @@ vi.mock('../agent-process.js', () => {
   return { AgentProcess: MockAgentProcess }
 })
 
-// Real BrainManager (conditionally wired to db9 for full E2E)
-const DB9_E2E = process.env['DB9_E2E'] === '1'
-let brainDbId: string | null = null
-const TEST_DB_NAME = `wanman-loop-e2e-${Date.now()}`
-
 // Real imports
 import { LoopEventBus } from '../loop-event-bus.js'
 import { LoopLogger } from '../loop-logger.js'
@@ -64,92 +55,26 @@ describe('Full loop observability pipeline E2E', () => {
   let bus: LoopEventBus
   let logger: LoopLogger
   let heartbeat: Heartbeat
-  let mockBrainManager: { isInitialized: boolean; executeSQL: (sql: string, ...rest: unknown[]) => Promise<unknown> } | null = null
 
   beforeAll(async () => {
     mkdirSync(tmpDir, { recursive: true })
 
-    // If DB9_E2E, create a real temporary database
-    if (DB9_E2E) {
-      try {
-        const out = execSync(`db9 --json db create --name ${TEST_DB_NAME}`, {
-          encoding: 'utf-8', timeout: 30_000,
-        })
-        const db = JSON.parse(out)
-        brainDbId = db.id
-        console.log(`  E2E db created: ${brainDbId}`)
-
-        // Wait for ready
-        let ready = false
-        const start = Date.now()
-        while (!ready && Date.now() - start < 30_000) {
-          try {
-            execSync(`db9 db sql ${brainDbId} -q "SELECT 1"`, { timeout: 10_000 })
-            ready = true
-          } catch { await new Promise(r => setTimeout(r, 2000)) }
-        }
-
-        // Create schema
-        execSync(`db9 db sql ${brainDbId} -q "CREATE TABLE IF NOT EXISTS runs (id text PRIMARY KEY, goal text, config jsonb, started_at timestamptz DEFAULT now(), ended_at timestamptz, total_loops int DEFAULT 0, productive_loops int DEFAULT 0, total_tokens int DEFAULT 0, total_cost_usd real DEFAULT 0, exit_reason text, metadata jsonb DEFAULT '{}')"`, { timeout: 15_000 })
-        execSync(`db9 db sql ${brainDbId} -q "CREATE TABLE IF NOT EXISTS loop_events (id serial PRIMARY KEY, run_id text NOT NULL, loop_number int NOT NULL, event_type text NOT NULL, classification text, agent text, payload jsonb NOT NULL DEFAULT '{}', created_at timestamptz DEFAULT now())"`, { timeout: 15_000 })
-
-        // Create brainManager proxy using db9 CLI
-        mockBrainManager = {
-          isInitialized: true,
-          executeSQL: async (sql: string) => {
-            const escaped = sql.replace(/"/g, '\\"')
-            const out = execSync(`db9 --json db sql ${brainDbId} -q "${escaped}"`, {
-              encoding: 'utf-8', timeout: 15_000,
-            })
-            return JSON.parse(out)
-          },
-        }
-      } catch (err) {
-        console.warn(`  db9 E2E setup failed, running without db9: ${err}`)
-        mockBrainManager = null
-      }
-    }
-
-    // Wire up the pipeline
     const runId = `run-e2e-${Date.now()}`
     bus = new LoopEventBus(runId)
     logger = new LoopLogger({
       ndjsonPath,
-      brainManager: mockBrainManager as any,
       bufferCapacity: 100,
     })
     logger.attach(bus)
     heartbeat = new Heartbeat(heartbeatPath, runId)
-
-    // Create run record in db9
-    await logger.createRun(runId, 'E2E pipeline test')
-  }, 60_000)
+  }, 15_000)
 
   afterAll(async () => {
     heartbeat.stop()
     logger.detach(bus)
     bus.removeAllListeners()
-
-    // Finalize run
-    await logger.finalizeRun(bus.runId, {
-      totalLoops: bus.currentLoop,
-      productiveLoops: 0, // computed below in test
-      totalTokens: 0,
-      totalCostUsd: 0,
-      exitReason: 'test_complete',
-    })
-
-    // Cleanup db9
-    if (DB9_E2E && brainDbId) {
-      try {
-        execSync(`db9 db delete ${brainDbId} --yes`, { timeout: 15_000 })
-        console.log(`  E2E db deleted: ${brainDbId}`)
-      } catch { /* ignore */ }
-    }
-
-    // Cleanup tmpDir
-    try { rmSync(tmpDir, { recursive: true }) } catch { /* ignore */ }
-  }, 30_000)
+    try { rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
+  }, 15_000)
 
   it('should produce NDJSON for a multi-loop simulation', () => {
     // Simulate 5 loops with realistic event patterns
@@ -294,34 +219,6 @@ describe('Full loop observability pipeline E2E', () => {
     expect(snap.artifactsCreated).toBe(1)
     expect(snap.agents).toHaveLength(2)
   })
-
-  // Conditional db9 tests
-  it('should write events to db9 loop_events table', async () => {
-    if (!DB9_E2E || !brainDbId) return
-
-    // Wait for async writes to complete
-    await new Promise(r => setTimeout(r, 2000))
-
-    const out = execSync(
-      `db9 --json db sql ${brainDbId} -q "SELECT count(*) as cnt FROM loop_events WHERE run_id = '${bus.runId}'"`,
-      { encoding: 'utf-8', timeout: 15_000 },
-    )
-    const rows = JSON.parse(out)
-    // Should have at least some events (async writes may not all complete)
-    expect(Number((rows[0] as { cnt: string }).cnt)).toBeGreaterThan(0)
-  }, 15_000)
-
-  it('should have created a run record in db9', async () => {
-    if (!DB9_E2E || !brainDbId) return
-
-    const out = execSync(
-      `db9 --json db sql ${brainDbId} -q "SELECT id, goal FROM runs WHERE id = '${bus.runId}'"`,
-      { encoding: 'utf-8', timeout: 15_000 },
-    )
-    const rows = JSON.parse(out)
-    expect(rows).toHaveLength(1)
-    expect((rows[0] as { goal: string }).goal).toBe('E2E pipeline test')
-  }, 15_000)
 
   it('should correctly classify the full loop history', () => {
     const lines = readFileSync(ndjsonPath, 'utf-8').trim().split('\n')

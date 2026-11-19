@@ -14,7 +14,6 @@ export interface RunLaunchPlan {
 }
 
 export interface RunSessionPlan {
-  brainName?: string
   runId: string
   configName: string
   sourceLabel: string
@@ -69,7 +68,7 @@ export function getRunSourceLabel(
   return options.standalone ? 'standalone' : 'monorepo'
 }
 
-export function buildRunBrainName(goal: string): string {
+export function buildRunId(goal: string): string {
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16)
   const slug = goal.slice(0, 20).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toLowerCase() || 'goal'
   return `wanman-run-${ts}-${slug}`
@@ -89,9 +88,9 @@ export function detectRequiredRuntimes(
     for (const agent of config.agents ?? []) {
       runtimes.add(normalizeRuntime(agent.runtime))
     }
-    return runtimes.size > 0 ? Array.from(runtimes) : ['claude']
+    return runtimes.size > 0 ? Array.from(runtimes) : ['agy']
   } catch {
-    return ['claude']
+    return ['agy']
   }
 }
 
@@ -102,12 +101,10 @@ export function createRunSessionPlan(args: {
   configName: string
   configText: string
   standalone: boolean
-  db9Token?: string
   env?: NodeJS.ProcessEnv
 }): RunSessionPlan {
   const env = args.env ?? process.env
-  const brainName = args.db9Token ? buildRunBrainName(args.goal) : undefined
-  const runId = brainName || `run-${Date.now().toString(36)}`
+  const runId = `run-${Date.now().toString(36)}`
   const useThirdPartyApi = !!env['ANTHROPIC_BASE_URL']
   const useHybrid = !!args.opts.workerUrl
   const rawRuntimeOverride = args.opts.runtime ?? (env['WANMAN_RUNTIME'] || undefined)
@@ -139,7 +136,6 @@ export function createRunSessionPlan(args: {
   const shouldShowAgyConfig = runtimeOverride === 'agy' || requiredRuntimes.some(runtime => runtime === 'agy')
 
   return {
-    brainName,
     runId,
     configName: args.configName,
     sourceLabel: getRunSourceLabel(args.launchPlan, { standalone: args.standalone }),

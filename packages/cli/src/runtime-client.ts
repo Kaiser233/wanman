@@ -13,10 +13,39 @@ export interface HealthAgent {
   name: string
   state: string
   lifecycle: string
+  runtime?: string
+  model?: string
+  currentTool?: string
+  inputTokens?: number
+  outputTokens?: number
+  totalTokens?: number
+  branch?: string
+  worktreePath?: string
+  haltedReason?: string
+}
+
+export interface HealthBudget {
+  totalTokens: number
+  tokenBudget: number | null
+  agentTokenBudget: number | null
+  elapsedMs: number
+  maxDurationMs: number | null
+  spawnTimeoutMs: number | null
+  halted: boolean
+  haltReason?: string
+}
+
+export interface HealthWorktree {
+  agent: string
+  name: string
+  path: string
+  branch: string
 }
 
 export interface RuntimeHealth {
   agents: HealthAgent[]
+  budget?: HealthBudget
+  worktrees?: HealthWorktree[]
   loop?: { runId?: string; currentLoop?: number }
   runtime?: {
     completedRuns?: number

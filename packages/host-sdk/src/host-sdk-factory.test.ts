@@ -8,7 +8,7 @@ interface ConcreteTakeoverOptions {
   goalOverride?: string
   runtime: AgentRuntime
   githubToken?: string
-  enableBrain: boolean
+  worktreeIsolation: boolean
 }
 
 const preparedPlan = {
@@ -33,9 +33,9 @@ const hostSdkAdapters: WanmanHostSdkAdapters<Record<string, never>, typeof prepa
     return {
       projectPath: options.projectPath,
       goalOverride: options.goalOverride,
-      runtime: options.runtime ? normalizeRuntime(options.runtime) : 'claude',
+      runtime: normalizeRuntime(options.runtime),
       githubToken: options.githubToken,
-      enableBrain: options.enableBrain ?? true,
+      worktreeIsolation: options.worktreeIsolation ?? true,
     }
   },
 }
@@ -92,15 +92,19 @@ describe('createWanmanHostSdk', () => {
     expect(adapters.prepareTakeoverPlan).toHaveBeenCalledWith({
       projectPath: '/repo',
       goalOverride: 'stabilize release',
-      runtime: 'claude',
+      runtime: 'agy',
       githubToken: undefined,
-      enableBrain: true,
+      worktreeIsolation: true,
     })
     expect(adapters.executePreparedTakeoverPlan).toHaveBeenCalledWith(
       preparedPlan,
       expect.objectContaining({
         infinite: true,
         loops: Infinity,
+        worktreeIsolation: true,
+        maxTokens: 1_000_000,
+        maxDurationSec: 3600,
+        spawnTimeoutSec: 600,
       }),
       expect.any(Object),
     )
@@ -157,7 +161,10 @@ describe('createEnvBackedWanmanHostSdk', () => {
 
     expect(normalizeRuntime('atg')).toBe('agy')
     expect(normalizeRuntime('ANTIGRAVITY')).toBe('agy')
-    expect(normalizeRuntime('gemini')).toBe('claude')
+    expect(normalizeRuntime('claude')).toBe('claude')
+    expect(normalizeRuntime('codex')).toBe('codex')
+    expect(normalizeRuntime(undefined)).toBe('agy')
+    expect(normalizeRuntime('unknown')).toBe('agy')
     expect(createRunOptions({ runtime: 'atg' as AgentRuntime }).runtime).toBe('agy')
   })
 })

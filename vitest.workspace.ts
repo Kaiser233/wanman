@@ -5,5 +5,4 @@ export default defineWorkspace([
   'packages/runtime',
   'packages/cli',
   'packages/host-sdk',
-  'packages/finops',
 ])

@@ -133,4 +133,18 @@ describe('WorktreeManager', () => {
     const removed = await manager.cleanup(60 * 60 * 1000)
     expect(removed).toBe(0)
   })
+
+  it('should ensure idempotently and detect dirty or unmerged worktree changes', async () => {
+    const first = await manager.ensure('dev-2', undefined, 'dev-2')
+    expect(first.branch).toBe('agent/dev-2')
+    expect(manager.hasUnmergedOrDirtyChanges('dev-2')).toBe(false)
+
+    const reused = await manager.ensure('dev-2', undefined, 'dev-2')
+    expect(reused.path).toBe(first.path)
+
+    writeFileSync(join(first.path, 'dirty.txt'), 'uncommitted')
+    expect(manager.hasUnmergedOrDirtyChanges('dev-2')).toBe(true)
+
+    await manager.remove('dev-2')
+  })
 })

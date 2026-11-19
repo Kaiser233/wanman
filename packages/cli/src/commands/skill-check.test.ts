@@ -85,7 +85,7 @@ describe('validateCommand', () => {
     expect(validateCommand('initiative create')).toBe(true)
     expect(validateCommand('capsule mine')).toBe(true)
     expect(validateCommand('artifact put')).toBe(true)
-    expect(validateCommand('hypothesis update')).toBe(true)
+    expect(validateCommand('context get')).toBe(true)
   })
 
   it('should reject unknown commands', () => {

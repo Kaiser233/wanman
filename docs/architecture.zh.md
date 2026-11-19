@@ -140,17 +140,16 @@ interface ContextEntry {
 
 RPC 方法：`context.get`、`context.set`、`context.list`。`set` 是 upsert（`INSERT ... ON CONFLICT DO UPDATE`）。
 
-## 5. 任务池、initiative、artifact、hypothesis
+## 5. 任务池、initiative、artifact、capsule
 
 除了原始消息之外，supervisor 还拥有一批结构化的状态：
 
 - **TaskPool** —— 归属于某个 agent 的任务，带状态（`pending`、`in_progress`、`done`、`blocked`）、优先级以及 `--after` 依赖。`wanman task list` 会渲染感知依赖关系的视图。
 - **InitiativeBoard** —— 更长期、跨多任务的 initiative。
-- **ArtifactStore** —— 通过 `wanman artifact put` 产出的结构化输出（调研摘要、计划等）。artifact 包含 kind、path、content 和 JSON 元数据。
-- **HypothesisPool** —— 带状态转移的实验式假设。
+- **ArtifactStore** —— 通过 `wanman artifact put` 持久化在本地 SQLite 中的结构化输出（调研摘要、计划等）。artifact 包含 kind、path、content 和 JSON 元数据。
 - **ChangeCapsulePool** —— agent 可以评审的变更捆绑提案。
 
-它们其实都是同一个 `wanman.db` 下的 SQLite 表，通过 JSON-RPC 访问。
+它们全部是同一个本地 `wanman.db` 下的 SQLite 表，通过 JSON-RPC 访问。
 
 ## 6. 外部事件与 cron
 
@@ -163,19 +162,19 @@ RPC 方法：`context.get`、`context.set`、`context.list`。`set` 是 upsert�
 
 ## 7. Runtime 适配器
 
-每个 agent 子进程都是 Claude Code、Codex 或 Antigravity (`agy`) 子进程。supervisor 通过 `WANMAN_RUNTIME`（默认 `claude`，可选 `codex` 或 `agy`，别名 `atg`、`antigravity`）进行选择，若 per-agent 有覆盖也会生效。
+每个 agent 子进程都是 Antigravity (`agy`)、Claude Code 或 Codex 子进程。supervisor 通过 `WANMAN_RUNTIME`（默认 `agy`，别名 `atg`、`antigravity`，可选 `claude` 或 `codex`）进行选择，若 per-agent 有覆盖也会生效。
 
+- `agy-adapter.ts` —— 面向 Antigravity CLI（`agy --input-format stream-json --output-format stream-json --dangerously-skip-permissions`），按 `WANMAN_AGY_BIN`、`PATH`、`~/.local/bin/agy` 顺序查找二进制文件。默认将 `high` / `standard` / `fast` 三档映射为 `gemini-4-hydrogen-high` / `gemini-4-carbon-medium` / `gemini-3.8-flash-low`，受 `WANMAN_AGY_MODEL`、`WANMAN_AGY_HIGH_MODEL`、`WANMAN_AGY_STANDARD_MODEL`、`WANMAN_AGY_FAST_MODEL` 和 `WANMAN_AGY_EFFORT` 控制，并自动设置 `AGY_CLI_DISABLE_AUTO_UPDATE=true` 和 `AGY_CLI_HIDE_LOGO=true`。
 - `claude-adapter.ts` / `claude-code.ts` —— 用 agent 的 system prompt 派生 `claude`，注入 skill 文件，把结构化事件流回传给 supervisor。
 - `codex-adapter.ts` —— 形态相同，面向 `@openai/codex`。`WANMAN_CODEX_MODEL` 和 `WANMAN_CODEX_REASONING_EFFORT` 控制模型选择。
-- `agy-adapter.ts` —— 面向 Antigravity CLI（`agy --input-format stream-json --output-format stream-json --dangerously-skip-permissions`），按 `WANMAN_AGY_BIN`、`PATH`、`~/.local/bin/agy` 顺序查找二进制文件，受 `WANMAN_AGY_MODEL`、`WANMAN_AGY_HIGH_MODEL`、`WANMAN_AGY_STANDARD_MODEL` 和 `WANMAN_AGY_EFFORT` 控制，并自动设置 `AGY_CLI_DISABLE_AUTO_UPDATE=true` 和 `AGY_CLI_HIDE_LOGO=true`。
 
 所有适配器发出同一套 `AgentRunEvent` 流，所以 supervisor 和 CLI 不关心跑的是哪一个。新增一个适配器只需要实现那个事件契约，并在 `agent-adapter.ts` / `agent-process.ts` 中注册它。
 
 ## 8. Worktree 与 home 隔离
 
-在派生首个子进程之前，supervisor 会为每个 agent 准备：
+在派生 worker 之前，supervisor 会准备：
 
-- 一个从当前 `HEAD` 物化到 `.wanman/worktree/` 下的 **worktree**。agent 编辑的是它，不是你真实的工作区。
+- 从 `HEAD` 物化到 `.wanman/worktree/` 的基础 **worktree**；开启 `worktreeIsolation` 时（`wanman takeover` 默认开启），还会通过 `WorktreeManager` 为每个写码 worker（`dev`、`dev-*`、`devops`、`worker`、`worker-*`）在 `.wanman/worktrees/<worker>/` 创建独立分支 `agent/<worker>`，并注入 `$WANMAN_AGENT_WORKTREE` 和 `$WANMAN_AGENT_BRANCH`。销毁动态克隆时若存在未提交或未合并改动，分支与 worktree 会自动保留。
 - 一个 **per-agent `$HOME`**，位于 `.wanman/home/<agent>/`，内含生成好的 `wanman` 和 `pnpm` 包装脚本。Shell 配置文件写入、`.npmrc` 编辑等都被圈在里面。
 - 该 home 下的 **runtime 状态与认证隔离**：`.claude/` 与 `.codex/` 按 agent 隔离；`.gemini/` 则按条目选择性桥接（在存在时符号链接 `GEMINI.md`、`antigravity-cli/settings.json`、`antigravity-cli/keybindings.json` 和 `config/{config.json,mcp_config.json,hooks.json,plugins,agents}`，并在 macOS 上符号链接 `Library/Keychains`），同时保持 `antigravity-cli` 运行时目录（`conversations/`、`brain/`、`cache/`）和 `config/skills/` 按 agent / run 隔离。
 
@@ -194,18 +193,16 @@ Skill 快照 —— 绑定到特定 run 的不可变副本 —— 被写入由 `
 - `wanman-cli` —— agent 在运行时查阅的 CLI 命令参考。
 - `workspace-conventions` —— agent 在工作区内应遵循的文件布局。
 
-## 10. Brain 与持久化
+## 10. 本地持久化与熔断保护
 
-两层持久化，对 agent 代码都是可选的：
-
-- **本地 SQLite（agents 配置中的 `dbPath`）** —— 始终存在。消息、context、任务、artifact、hypothesis、capsule。在同一个 workspace 内跨 supervisor 重启持久。
-- **`@sandbank.dev/db9` brain 适配器（可选）** —— 如果 runtime 配置了 db9 连接（token + db 名），它会把 artifact 和 context 镜像到一个跨 run、跨机器的存储中。适合多台 supervisor 共享记忆的场景，或者 run 后分析。OSS 构建把 db9 视为可选对等依赖 —— 缺失它只是禁用镜像而已。
+- **本地 SQLite（agents 配置中的 `dbPath`）** —— 始终存在、零云端依赖。消息、context、任务、initiative、capsule 与 artifact（`ArtifactStore`）全部持久化在本地 `wanman.db` 中，跨 supervisor 重启持久保留。
+- **硬熔断机制** —— Supervisor 实时监控全局 Token 预算（`tokenBudget` / `--max-tokens`）、单 Agent Token 预算（`agentTokenBudget` / `--agent-max-tokens`）、全局墙钟时长上限（`maxDurationMs` / `--max-duration`）与单次执行超时（`spawnTimeoutMs` / `--spawn-timeout`）。触发阈值时立即停止受影响或全部 agent，在 `/health.budget.halted` 标记熔断原因并发送 `run.halted` 事件，CLI 随后输出结构化停机报告并干净退出。
 
 ## 11. HTTP 接口速览
 
 | 端点 | 方法 | 用途 |
 |----------|--------|---------|
-| `/health` | GET | supervisor + 各 agent 的状态快照。 |
+| `/health` | GET | supervisor + 各 agent 实时状态（`runtime`、`model`、`currentTool`、`totalTokens`、`branch`）、`budget` 与 `worktrees` 快照。 |
 | `/rpc` | POST | JSON-RPC 2.0 —— 主要的 CLI 接口面。 |
 | `/events` | POST | 外部事件入口。 |
 
@@ -213,9 +210,9 @@ Skill 快照 —— 绑定到特定 run 的不可变副本 —— 被写入由 `
 
 | 方法 | 用途 |
 |--------|---------|
-| `agent.send` / `agent.recv` / `agent.list` | Agent 之间的消息。 |
+| `agent.send` / `agent.recv` / `agent.list` | Agent 之间的消息与实时状态查询。 |
 | `context.get` / `context.set` / `context.list` | 共享 context。 |
-| `task.*` / `initiative.*` / `capsule.*` / `artifact.*` / `hypothesis.*` | 结构化状态。 |
+| `task.*` / `initiative.*` / `capsule.*` / `artifact.*` | 本地 SQLite 结构化状态。 |
 | `event.push` | 与 `POST /events` 相同，供 RPC 客户端使用。 |
 | `health.check` | 通过 RPC 获取健康快照。 |
 

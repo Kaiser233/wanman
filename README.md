@@ -15,28 +15,27 @@ The name wanman comes from the Japanese [ワンマン電車 / one-man train](htt
 ## What it does
 
 - Coordinates multiple agents (CEO, dev, devops, marketing, feedback, etc.) through an async message bus with steer/follow-up priorities.
-- Runs each agent as a real Claude Code, Codex, or Antigravity (`agy`) CLI subprocess — you bring your own CLI auth, wanman orchestrates spawning, prompting, and lifecycle.
-- Isolates every agent in a per-agent worktree and per-agent `$HOME`, so agents never mutate your dirty checkout or shell profile.
+- Runs each agent as a real **Antigravity (`agy`)** (default), Claude Code, or Codex CLI subprocess — you bring your own CLI auth, wanman orchestrates spawning, prompting, and lifecycle.
+- Supports 3 abstract model tiers (`high`, `standard`, `fast`) mapped per runtime (e.g. `agy`: `gemini-4-hydrogen-high` / `gemini-4-carbon-medium` / `gemini-3.8-flash-low`) with CLI & env overrides.
+- Isolates every code-writing worker (`dev`, `dev-*`, `devops`, `worker`, `worker-*`) in its own git worktree and branch (`agent/<name>`) under `.wanman/worktrees/` plus an isolated `$HOME`, preserving unmerged/dirty work automatically.
+- Protects unattended runs with hard circuit breakers: global token budget (`--max-tokens`, default `1000000`), per-agent token budget (`--agent-max-tokens`), wall-clock duration cap (`--max-duration`, default `3600s`), per-spawn timeout (`--spawn-timeout`, default `600s`), live TUI progress bars, and a structured stop/halt report.
+- Pure-local persistence: messages, context, tasks, initiatives, capsules, and artifacts live in a single local SQLite database (`wanman.db`) with zero cloud dependencies.
 - Is CLI-first: everything is scriptable, observable, and reproducible through `wanman` commands and a JSON-RPC supervisor.
-- Includes an experimental `@wanman/finops` toolkit for API credential inventory, provider cost sync, Stripe revenue sync, and product/company ROI summaries.
-
-[wanman.ai](https://wanman.ai/) adds hosted-only capabilities:
-- Isolates each agent runtime group in its own sandbox environment, supporting large-scale, high-concurrency task execution.
-- Dynamically configures agent roles, including automatically extracting roles from high-quality agent role catalogs on the internet.
-- Supports dynamic skill self-evolution.
-- Supports db9-powered global search and story retrieval.
 
 ## Quickstart
 
 ```bash
-# Prerequisites: Node 20+, pnpm 9+, git, and an authenticated Claude Code, Codex, or Antigravity (agy) CLI.
-git clone git@github.com:chekusu/wanman.git wanman.dev
-cd wanman.dev
+# Prerequisites: Node 20+, pnpm 9+, git, and an authenticated Antigravity (agy), Claude Code, or Codex CLI.
+git clone https://github.com/Kaiser233/wanman.git wanman
+cd wanman
 pnpm install
 pnpm build
 
-# Run from source; no npm package publish is required.
+# Take over any local git repo with Antigravity (agy) + isolated per-worker worktrees (default)
 pnpm --filter @wanman/cli exec wanman takeover /path/to/any/git/repo
+
+# Optional: finite loops + explicit token/duration circuit breakers
+pnpm --filter @wanman/cli exec wanman takeover /path/to/any/git/repo --loops 10 --max-tokens 500000 --max-duration 1800
 ```
 
 If you want a single-file CLI bundle instead:
@@ -50,25 +49,22 @@ If `wanman` is already on your `PATH`, you can also run `wanman takeover .` from
 
 See [`docs/quickstart.md`](docs/quickstart.md) for the full walkthrough.
 
-For cost and revenue accounting, see [`docs/finops.md`](docs/finops.md). The local FinOps review app runs with `pnpm --filter @wanman/finops dev -- --host 127.0.0.1 --port 4173`.
-
 ## CLI commands
 
 | Command | What it does |
 |---------|--------------|
 | `wanman send <agent> <msg>` | Send a message to an agent (`--steer` interrupts the target). |
 | `wanman recv [--agent <name>]` | Receive and mark pending messages as delivered. |
-| `wanman agents` | List registered agents and their current states. |
+| `wanman agents` | List registered agents with runtime/model, active tool, tokens, branch, and state. |
 | `wanman context get` / `context set` | Read or write shared key/value context. |
 | `wanman escalate <msg>` | Escalate to the CEO agent. |
 | `wanman task …` | Manage the task pool: `create`, `list`, `get`, `update`, `done`. Supports `--after` dependencies. |
 | `wanman initiative …` | Manage long-lived initiatives: `create`, `list`, `get`, `update`. |
 | `wanman capsule …` | Manage change capsules: `create`, `list`, `mine`, `get`, `update`. |
-| `wanman artifact …` | Store and retrieve structured artifacts: `put`, `list`, `get`. |
-| `wanman hypothesis …` | Track hypotheses with status transitions: `create`, `list`, `update`. |
-| `wanman watch` | Live-stream supervisor and agent activity. |
-| `wanman run <goal>` | Start a matrix against a one-shot goal. |
-| `wanman takeover <path>` | Take over an existing git repo with the full agent matrix. |
+| `wanman artifact …` | Store and retrieve structured artifacts locally in SQLite: `put`, `list`, `get`. |
+| `wanman watch` | Inspect local `loop-events.ndjson` activity and budget halt events. |
+| `wanman run <goal>` | Start a matrix against a one-shot goal with live TUI and circuit breakers. |
+| `wanman takeover <path>` | Take over an existing git repo with isolated per-worker git worktrees. |
 | `wanman skill:check [path]` | Validate that skill docs reference only real CLI commands. |
 
 Run `wanman --help` for the full, current list.
@@ -101,15 +97,18 @@ Deep dive: [`docs/architecture.md`](docs/architecture.md).
 |---------|---------|
 | `WANMAN_URL` | Supervisor HTTP URL for the CLI (default `http://localhost:3120`). |
 | `WANMAN_AGENT_NAME` | Identifies the current agent; used as default sender/receiver inside agent processes. |
-| `WANMAN_RUNTIME` | `claude` (default), `codex`, or `agy` (aliases: `atg`, `antigravity`) — selects the per-agent CLI adapter. |
+| `WANMAN_RUNTIME` | `agy` (default; aliases: `atg`, `antigravity`), `claude`, or `codex` — selects the per-agent CLI adapter. |
 | `WANMAN_MODEL`, `WANMAN_CODEX_MODEL`, `WANMAN_CODEX_REASONING_EFFORT` | Per-runtime model overrides (`WANMAN_MODEL` and Codex model/reasoning effort). |
 | `WANMAN_CODEX_FAST` | When set, biases the Codex adapter toward lower-latency defaults. |
-| `WANMAN_AGY_MODEL`, `WANMAN_AGY_HIGH_MODEL`, `WANMAN_AGY_STANDARD_MODEL` | Model overrides for the Antigravity (`agy`) adapter (use `default` to omit `--model`). |
+| `WANMAN_AGY_MODEL`, `WANMAN_AGY_HIGH_MODEL`, `WANMAN_AGY_STANDARD_MODEL`, `WANMAN_AGY_FAST_MODEL` | Model overrides for the Antigravity (`agy`) adapter (use `default` to omit `--model`). |
 | `WANMAN_AGY_EFFORT` | Reasoning effort for `agy` (`low`, `medium`, `high`, `xhigh`, `max`). |
 | `WANMAN_AGY_BIN` | Override path to the `agy` binary (falls back to `PATH` and `~/.local/bin/agy`). |
+| `WANMAN_WORKTREE_ISOLATION` | Set `1` to enable per-worker git worktrees (`agent/<name>`) or `0` to share one worktree. |
+| `WANMAN_TOKEN_BUDGET` / `WANMAN_AGENT_TOKEN_BUDGET` | Global (default `1000000`) and per-agent (default `0` = unlimited) token circuit breakers. |
+| `WANMAN_MAX_DURATION_MS` / `WANMAN_TIME_BUDGET_MS` | Global wall-clock duration cap (default `3600000`) and per-spawn timeout (default `600000`). |
 | `WANMAN_SKILL_SNAPSHOTS_DIR` | Override where the runtime materializes skill-activation snapshots (default: sibling of the shared-skills dir, falling back to `$TMPDIR/wanman-skill-snapshots`). |
 
-An optional `@sandbank.dev/db9` brain adapter can be attached for cross-run memory — see [`docs/architecture.md`](docs/architecture.md#brain--persistence).
+All state (messages, context, tasks, initiatives, capsules, and artifacts) is persisted locally in SQLite (`wanman.db`) — see [`docs/architecture.md`](docs/architecture.md#10-local-persistence--circuit-breakers).
 
 ## Agent configs
 
@@ -130,7 +129,7 @@ Agent definitions live in a single JSON file:
 Each agent entry has:
 - `name` — unique identifier used on the message bus.
 - `lifecycle` — `24/7` (continuous respawn loop), `on-demand` (idle until triggered), or `idle_cached` (idle until triggered, preserving conversation context across triggers via `claude --resume` or `agy --conversation`). **`idle_cached` is supported on `claude` and `agy`**: pairing it with `runtime: codex` (or `WANMAN_RUNTIME=codex`) is rejected at startup since Codex has no equivalent resume mechanism in this runtime.
-- `model` — usually an abstract tier (`high` or `standard`); the runtime adapter maps it to Claude, Codex, or Antigravity (`agy`) defaults, with environment overrides available.
+- `model` — usually an abstract tier (`high`, `standard`, or `fast`); the runtime adapter maps it to Antigravity (`agy`), Claude, or Codex defaults, with environment overrides available.
 - `systemPrompt` — baked-in persona/mission; agents also auto-discover shared skill files under `~/.claude/skills/`, `~/.codex/skills/`, or `~/.gemini/config/skills/`.
 - Optional `cron`, `events`, and `tools` fields — see the architecture doc for the full schema.
 

@@ -3,6 +3,7 @@ import * as path from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
+import { createDefaultRunOptions } from '@wanman/host-sdk'
 import {
   createDefaultLocalRunConfigText,
   downloadLocalDeliverables,
@@ -180,11 +181,11 @@ describe('materializeLocalRunLayout', () => {
 describe('default local run config', () => {
   it('creates a built-in local config when no project config is supplied', () => {
     const config = JSON.parse(createDefaultLocalRunConfigText({
+      ...createDefaultRunOptions(),
       loops: 1,
       pollInterval: 1,
       output: './deliverables',
       keep: false,
-      noBrain: true,
       infinite: false,
       errorLimit: 20,
       workerKey: 'lmstudio',
@@ -197,11 +198,11 @@ describe('default local run config', () => {
 
   it('honors codex and worker overrides in the built-in local config', () => {
     const config = JSON.parse(createDefaultLocalRunConfigText({
+      ...createDefaultRunOptions(),
       loops: 1,
       pollInterval: 1,
       output: './deliverables',
       keep: false,
-      noBrain: true,
       infinite: false,
       errorLimit: 20,
       workerKey: 'lmstudio',
@@ -222,11 +223,11 @@ describe('default local run config', () => {
 
   it('honors agy runtime in the built-in local config', () => {
     const config = JSON.parse(createDefaultLocalRunConfigText({
+      ...createDefaultRunOptions(),
       loops: 1,
       pollInterval: 1,
       output: './deliverables',
       keep: false,
-      noBrain: true,
       infinite: false,
       errorLimit: 20,
       workerKey: 'lmstudio',
@@ -240,11 +241,11 @@ describe('default local run config', () => {
 
   it('uses the built-in local config name and text by default', () => {
     const opts = {
+      ...createDefaultRunOptions(),
       loops: 1,
       pollInterval: 1,
       output: './deliverables',
       keep: false,
-      noBrain: true,
       infinite: false,
       errorLimit: 20,
       workerKey: 'lmstudio',
@@ -262,11 +263,11 @@ describe('default local run config', () => {
     fs.writeFileSync(customConfig, '{"agents":[{"name":"custom"}]}')
     fs.writeFileSync(path.join(projectDir, 'agents.json'), '{"agents":[{"name":"project"}]}')
     const opts = {
+      ...createDefaultRunOptions(),
       loops: 1,
       pollInterval: 1,
       output: './deliverables',
       keep: false,
-      noBrain: true,
       infinite: false,
       errorLimit: 20,
       configPath: customConfig,

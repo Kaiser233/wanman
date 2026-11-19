@@ -121,7 +121,11 @@ export interface WriteTakeoverOverlayOptions {
   gitRoot: string
   dbPath: string
   runtimePaths: TakeoverRuntimePaths
-  enableBrain?: boolean
+  worktreeIsolation?: boolean
+  tokenBudget?: number
+  agentTokenBudget?: number
+  maxDurationMs?: number
+  spawnTimeoutMs?: number
   port?: number
 }
 
@@ -501,7 +505,7 @@ export function inferGoal(profile: ProjectProfile, intent = buildProjectIntent(p
 export function generateAgentConfig(
   profile: ProjectProfile,
   goalOverride?: string,
-  runtime: AgentRuntime = 'claude',
+  runtime: AgentRuntime = 'agy',
 ): GeneratedAgentConfig {
   const intent = buildProjectIntent(profile)
   const goal = goalOverride || inferGoal(profile, intent)
@@ -571,15 +575,6 @@ export function generateAgentConfig(
 
 function applyCliCommand(template: string, cliCommand: string): string {
   return template.replaceAll('wanman ', `${cliCommand} `)
-}
-
-function maybeGetDb9Token(): string | undefined {
-  if (process.env['DB9_TOKEN']) return process.env['DB9_TOKEN']
-  try {
-    return execSync('db9 token show 2>/dev/null', { encoding: 'utf-8' }).trim() || undefined
-  } catch {
-    return undefined
-  }
 }
 
 function buildTakeoverSystemPrompt(
@@ -673,11 +668,12 @@ ${scripts}
 
 You have full \`git\` and \`gh\` (GitHub CLI) access in this environment.
 
-- Dev: create a feature branch -> write code + tests -> push -> open PR -> notify CTO
+- When isolated worktrees are active, each code-writing worker (\`dev\`, \`dev-*\`, \`devops\`) runs in its own git worktree (\`$WANMAN_AGENT_WORKTREE\`) and branch (\`$WANMAN_AGENT_BRANCH\`, e.g. \`agent/dev\`). Work inside that worktree rather than running \`git checkout main\` in a shared repo directory.
+- Dev: commit verified code + tests on your assigned branch (or a task branch created from your worktree HEAD) -> push -> open PR -> notify CTO
 - CEO: maintain initiative board and create capsules for code work before branches sprawl
 - CTO: review PR (coverage >= 95% gate) -> approve + merge, or request changes
 - CEO: task decomposition and monitoring only - does NOT merge PRs
-- Branch naming: \`wanman/<task-slug>\`
+- Branch naming: use \`$WANMAN_AGENT_BRANCH\` when isolated, or \`wanman/<task-slug>\` when sharing a worktree
 - Always run tests with coverage before pushing
 `, paths.cliCommand)
 }
@@ -838,26 +834,27 @@ ${intro}
 
 ## Branch Workflow
 
+When per-worker worktree isolation is enabled, your isolated git worktree is at \`$WANMAN_AGENT_WORKTREE\` on branch \`$WANMAN_AGENT_BRANCH\` (e.g. \`agent/dev\`). Stay inside your assigned worktree and do NOT run \`git checkout main\` across another worker's branch.
+
 For each task, follow this git workflow:
 
 \`\`\`bash
-# 1. Start from latest main
-git checkout main && git pull origin main
-
-# 2. Inspect your capsule and use its branch / allowed paths
+# 1. Inspect your capsule and current branch
 wanman capsule mine
-git checkout -b wanman/<task-slug>  # or the exact capsule branch
+git status -sb
+# If you are on detached HEAD (shared mode), create a branch from HEAD:
+# git checkout -b wanman/<task-slug>
 
-# 3. Write code AND tests - target >= 95% coverage on changed files
+# 2. Write code AND tests - target >= 95% coverage on changed files
 
-# 4. Run tests with coverage
+# 3. Run tests with coverage
 pnpm test --coverage  # or pytest --cov, go test -cover, etc.
 
-# 5. Commit (small, focused commits)
+# 4. Commit (small, focused commits)
 git add -A && git commit -m "<type>: <description>"
 
-# 6. Push and open PR - include coverage in PR body
-git push -u origin wanman/<task-slug>
+# 5. Push and open PR (if an origin remote exists) - include coverage in PR body
+git push -u origin HEAD
 gh pr create --title "<task title>" --body "$(cat <<PRBODY
 ## Changes
 - ...
@@ -867,7 +864,7 @@ gh pr create --title "<task title>" --body "$(cat <<PRBODY
 PRBODY
 )"
 
-# 7. Notify CTO for review (NOT CEO)
+# 6. Notify CTO for review (NOT CEO)
 wanman capsule update <capsule-id> --status in_review
 wanman send cto "PR ready for review: <pr-url>"
 \`\`\`
@@ -976,9 +973,11 @@ export function writeTakeoverOverlayFiles(
     workspaceRoot: options.workspaceRoot,
     gitRoot: options.gitRoot,
     goal: generated.goal,
-    ...((options.enableBrain ?? true) && maybeGetDb9Token()
-      ? { brain: { token: '${DB9_TOKEN}', dbName: '${WANMAN_BRAIN_NAME}' } }
-      : {}),
+    ...(options.worktreeIsolation !== undefined ? { worktreeIsolation: options.worktreeIsolation } : {}),
+    ...(options.tokenBudget !== undefined ? { tokenBudget: options.tokenBudget } : {}),
+    ...(options.agentTokenBudget !== undefined && options.agentTokenBudget > 0 ? { agentTokenBudget: options.agentTokenBudget } : {}),
+    ...(options.maxDurationMs !== undefined ? { maxDurationMs: options.maxDurationMs } : {}),
+    ...(options.spawnTimeoutMs !== undefined ? { spawnTimeoutMs: options.spawnTimeoutMs } : {}),
   }
 
   fs.writeFileSync(options.configPath, JSON.stringify(config, null, 2))
@@ -1000,7 +999,13 @@ export function writeTakeoverOverlayFiles(
 export function materializeTakeoverProject(
   profile: ProjectProfile,
   generated: GeneratedAgentConfig,
-  opts?: { enableBrain?: boolean },
+  opts?: {
+    worktreeIsolation?: boolean
+    tokenBudget?: number
+    agentTokenBudget?: number
+    maxDurationMs?: number
+    spawnTimeoutMs?: number
+  },
 ): string {
   const overlayDir = fs.mkdtempSync(path.join(tmpdir(), 'wanman-takeover-project-'))
   writeTakeoverOverlayFiles(profile, generated, {
@@ -1012,7 +1017,11 @@ export function materializeTakeoverProject(
     gitRoot: SANDBOX_PROJECT_ROOT,
     dbPath: '/workspace/wanman.db',
     runtimePaths: SANDBOX_RUNTIME_PATHS,
-    enableBrain: opts?.enableBrain,
+    worktreeIsolation: opts?.worktreeIsolation,
+    tokenBudget: opts?.tokenBudget,
+    agentTokenBudget: opts?.agentTokenBudget,
+    maxDurationMs: opts?.maxDurationMs,
+    spawnTimeoutMs: opts?.spawnTimeoutMs,
   })
   return overlayDir
 }

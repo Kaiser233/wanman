@@ -34,16 +34,16 @@ export class WorktreeManager {
   private readonly repoDir: string
   private readonly worktreesDir: string
 
-  constructor(repoDir: string) {
+  constructor(repoDir: string, worktreesDir?: string) {
     this.repoDir = repoDir
-    this.worktreesDir = join(repoDir, WORKTREES_DIR)
+    this.worktreesDir = worktreesDir ?? join(repoDir, WORKTREES_DIR)
   }
 
   /**
    * Create a new worktree for the given task name.
    * Creates branch `agent/<name>` based on `baseBranch` (default: HEAD).
    */
-  async create(name: string, baseBranch?: string): Promise<WorktreeInfo> {
+  async create(name: string, baseBranch?: string, agentId?: string): Promise<WorktreeInfo> {
     if (!SAFE_NAME.test(name)) {
       throw new Error(`Invalid worktree name "${name}": must match ${SAFE_NAME}`)
     }
@@ -74,16 +74,122 @@ export class WorktreeManager {
       name,
       branch,
       createdAt: now,
+      ...(agentId ? { agentId } : {}),
     }
 
     // Write metadata file
     writeFileSync(join(wtPath, META_FILE), JSON.stringify(meta))
+    this.ensureMetaExcluded()
 
     return {
       name,
       path: wtPath,
       branch,
       createdAt: now,
+      ...(agentId ? { agentId } : {}),
+    }
+  }
+
+  /**
+   * Ensure a worktree exists for `name`. Reuses an existing worktree if already
+   * registered; if the branch `agent/<name>` already exists without a worktree,
+   * attaches it cleanly instead of failing.
+   */
+  async ensure(name: string, baseBranch?: string, agentId?: string): Promise<WorktreeInfo> {
+    if (!SAFE_NAME.test(name)) {
+      throw new Error(`Invalid worktree name "${name}": must match ${SAFE_NAME}`)
+    }
+    const existing = await this.get(name)
+    if (existing) {
+      return { ...existing, ...(agentId && !existing.agentId ? { agentId } : {}) }
+    }
+
+    const wtPath = join(this.worktreesDir, name)
+    const branch = `${BRANCH_PREFIX}${name}`
+    mkdirSync(this.worktreesDir, { recursive: true })
+
+    const branchExists = this.branchExists(branch)
+    if (branchExists) {
+      execFileSync('git', ['worktree', 'prune'], { cwd: this.repoDir, stdio: 'pipe' })
+      if (existsSync(wtPath)) {
+        rmSync(wtPath, { recursive: true, force: true })
+      }
+      execFileSync('git', ['worktree', 'add', wtPath, branch], {
+        cwd: this.repoDir,
+        stdio: 'pipe',
+      })
+      const now = Date.now()
+      const meta: WorktreeMeta = { name, branch, createdAt: now, ...(agentId ? { agentId } : {}) }
+      writeFileSync(join(wtPath, META_FILE), JSON.stringify(meta))
+      this.ensureMetaExcluded()
+      return { name, path: wtPath, branch, createdAt: now, ...(agentId ? { agentId } : {}) }
+    }
+
+    return this.create(name, baseBranch, agentId)
+  }
+
+  /**
+   * Check whether a managed worktree has uncommitted changes or commits ahead
+   * of the repository HEAD so cleanup never silently drops work.
+   */
+  hasUnmergedOrDirtyChanges(name: string): boolean {
+    const wtPath = join(this.worktreesDir, name)
+    if (!existsSync(wtPath)) return false
+    try {
+      const dirty = execFileSync('git', ['status', '--porcelain'], {
+        cwd: wtPath,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim()
+      const nonMetaDirty = dirty
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0 && !line.endsWith(META_FILE))
+      if (nonMetaDirty.length > 0) return true
+
+      const branch = `${BRANCH_PREFIX}${name}`
+      const ahead = execFileSync('git', ['rev-list', '--count', `HEAD..${branch}`], {
+        cwd: this.repoDir,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim()
+      return Number.parseInt(ahead, 10) > 0
+    } catch {
+      return true
+    }
+  }
+
+  private branchExists(branch: string): boolean {
+    try {
+      execFileSync('git', ['rev-parse', '--verify', `refs/heads/${branch}`], {
+        cwd: this.repoDir,
+        stdio: 'pipe',
+      })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private ensureMetaExcluded(): void {
+    try {
+      const commonDir = execFileSync('git', ['rev-parse', '--git-common-dir'], {
+        cwd: this.repoDir,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim()
+      const resolvedCommonDir = commonDir.startsWith('/') ? commonDir : join(this.repoDir, commonDir)
+      const infoDir = join(resolvedCommonDir, 'info')
+      const excludeFile = join(infoDir, 'exclude')
+      mkdirSync(infoDir, { recursive: true })
+      const current = existsSync(excludeFile) ? readFileSync(excludeFile, 'utf-8') : ''
+      const lines = current.split(/\r?\n/).map(line => line.trim())
+      if (!lines.includes(META_FILE)) {
+        const prefix = current.length > 0 && !current.endsWith('\n') ? '\n' : ''
+        writeFileSync(excludeFile, `${current}${prefix}${META_FILE}\n`)
+      }
+    } catch {
+      // Best-effort only
     }
   }
 

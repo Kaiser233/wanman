@@ -118,8 +118,6 @@ export interface SpawnOptions {
   resumeSessionId?: string;
   /** Extra environment variables to inject into the spawned process */
   env?: Record<string, string>;
-  /** Run claude as this user (via runuser). When unset, runs as current user. */
-  runAsUser?: string;
 }
 
 /**
@@ -145,24 +143,14 @@ export function spawnClaudeCode(opts: SpawnOptions): ClaudeCodeProcess {
     claudeArgs.push('--resume', resumeSessionId);
   }
 
-  // When running as root and runAsUser is set, use runuser to switch user
-  const runAsUser = opts.runAsUser;
-  const useRunuser = runAsUser && process.getuid?.() === 0;
-  const cmd = useRunuser ? 'runuser' : 'claude';
-  const args = useRunuser
-    ? ['-u', runAsUser, '--', 'claude', ...claudeArgs]
-    : claudeArgs;
+  log.info('spawning', { model, cwd });
 
-  log.info('spawning', { model, cwd, ...(useRunuser ? { runAsUser } : {}) });
-
-  const proc = spawn(cmd, args, {
+  const proc = spawn('claude', claudeArgs, {
     cwd,
     env: {
       ...process.env,
       // Force bash shell — prevents zsh glob expansion breaking paths like (auth)/
       SHELL: '/bin/bash',
-      // Fix HOME for runuser: Claude Code needs correct home for session-env, settings, etc.
-      ...(useRunuser ? { HOME: `/home/${runAsUser}` } : {}),
       DISABLE_AUTOUPDATER: '1',
       DISABLE_TELEMETRY: '1',
       DISABLE_ERROR_REPORTING: '1',

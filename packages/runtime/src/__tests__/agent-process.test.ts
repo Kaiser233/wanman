@@ -161,6 +161,7 @@ function makeDef(overrides?: Partial<AgentDefinition>): AgentDefinition {
   return {
     name: 'test-agent',
     lifecycle: 'on-demand',
+    runtime: 'claude',
     model: 'haiku',
     systemPrompt: 'test',
     ...overrides,
@@ -1071,6 +1072,59 @@ describe('AgentProcess', () => {
       expect(callbacks[0]!.steerCount).toBe(2)
 
       agent.stop()
+    })
+
+    it('streams live currentTool and non-double-counted token deltas across step_update and result', async () => {
+      relay.send('ceo', 'test-agent', 'message', 'inspect repo', 'normal')
+
+      const deltas: Array<{ agent: string; totalTokens: number }> = []
+      const agent = new AgentProcess(
+        makeDef({ runtime: undefined, model: 'fast' }),
+        relay,
+        '/tmp',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        (agentName, delta) => deltas.push({ agent: agentName, totalTokens: delta.totalTokens }),
+      )
+
+      expect(agent.runtime).toBe('agy')
+      expect(agent.resolvedModel).toBe('gemini-3.8-flash-low')
+
+      waitDeferreds[0] = deferred<number>()
+      const triggerPromise = agent.trigger()
+      await new Promise(r => setTimeout(r, 10))
+
+      eventHandlers[0]?.({ type: 'step_update', tool_name: 'read_file', tool_input: { Path: '/tmp/a.ts' } })
+      expect(agent.currentTool).toBe('read_file')
+
+      eventHandlers[0]?.({ type: 'step_update', tool_done: true })
+      expect(agent.currentTool).toBeUndefined()
+
+      eventHandlers[0]?.({
+        type: 'step_update',
+        step_update: { step_type: 'agent_response', usage: { input_tokens: 1000, output_tokens: 20, total_tokens: 1020 } },
+      })
+      eventHandlers[0]?.({
+        type: 'step_update',
+        step_update: { step_type: 'agent_response', usage: { input_tokens: 500, output_tokens: 30, total_tokens: 530 } },
+      })
+      eventHandlers[0]?.({
+        type: 'result',
+        usage: { input_tokens: 1500, output_tokens: 50, total_tokens: 1550 },
+      })
+
+      waitDeferreds[0].resolve(0)
+      await triggerPromise
+
+      expect(agent.currentTool).toBeUndefined()
+      expect(agent.totalUsage).toEqual({ inputTokens: 1500, outputTokens: 50, totalTokens: 1550 })
+      expect(deltas.reduce((sum, d) => sum + d.totalTokens, 0)).toBe(1550)
     })
   })
 })

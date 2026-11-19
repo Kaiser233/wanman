@@ -159,6 +159,8 @@ export function normalizeAgyEvent(raw: Record<string, unknown>): NormalizedAgyLi
       if (params) {
         event['tool_input'] = params;
       }
+    } else if (stepUpdate?.['step_type'] === 'tool' && stepUpdate['state'] === 'DONE') {
+      event['tool_done'] = true;
     }
 
     return {
@@ -220,13 +222,6 @@ export function spawnAgy(opts: AgentRunOptions): AgentRunHandle {
   const binary = resolveAgyBinary(opts.env);
   const agyArgs = buildAgyArgs(opts);
 
-  const runAsUser = opts.runAsUser;
-  const useRunuser = Boolean(runAsUser && process.getuid?.() === 0);
-  const cmd = useRunuser ? 'runuser' : binary;
-  const args = useRunuser
-    ? ['-u', runAsUser!, '--', binary, ...agyArgs]
-    : agyArgs;
-
   const effort = normalizeAgyEffort(
     opts.reasoningEffort ?? opts.env?.['WANMAN_AGY_EFFORT'] ?? process.env['WANMAN_AGY_EFFORT'],
   );
@@ -237,15 +232,13 @@ export function spawnAgy(opts: AgentRunOptions): AgentRunHandle {
     model: opts.model,
     ...(effort ? { effort } : {}),
     ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
-    ...(useRunuser ? { runAsUser } : {}),
   });
 
-  const proc = spawn(cmd, args, {
+  const proc = spawn(binary, agyArgs, {
     cwd: opts.cwd,
     env: {
       ...process.env,
       SHELL: '/bin/bash',
-      ...(useRunuser ? { HOME: `/home/${runAsUser}` } : {}),
       AGY_CLI_DISABLE_AUTO_UPDATE: 'true',
       AGY_CLI_HIDE_LOGO: 'true',
       DISABLE_TELEMETRY: '1',

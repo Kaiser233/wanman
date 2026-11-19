@@ -13,7 +13,6 @@ export class ClaudeAdapter implements AgentAdapter {
       sessionId: opts.sessionId,
       ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
       env: opts.env,
-      runAsUser: opts.runAsUser,
     });
   }
 }

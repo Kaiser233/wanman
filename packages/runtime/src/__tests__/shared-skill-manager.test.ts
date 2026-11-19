@@ -1,8 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { BrainManager } from '../brain-manager.js'
+import { afterEach, describe, expect, it } from 'vitest'
 import { SharedSkillManager } from '../shared-skill-manager.js'
 
 describe('SharedSkillManager', () => {
@@ -14,18 +13,16 @@ describe('SharedSkillManager', () => {
     }
   })
 
-  it('imports filesystem skills into the shared skill registry', async () => {
-    const { manager, executeSQL } = createManagerWithSkill('playbook', '# Playbook')
-
-    await manager.syncFilesystemSkills()
-
-    const sqlCalls = executeSQL.mock.calls.map(([sql]) => String(sql))
-    expect(sqlCalls.some(sql => sql.includes('INSERT INTO shared_skills'))).toBe(true)
-    expect(sqlCalls.some(sql => sql.includes('INSERT INTO shared_skill_versions'))).toBe(true)
+  it('lists filesystem skills sorted by name', () => {
+    const { manager } = createManagerWithSkill('playbook', '# Playbook', tempRoots)
+    const skills = manager.listFilesystemSkills()
+    expect(skills).toHaveLength(1)
+    expect(skills[0]?.name).toBe('playbook')
+    expect(skills[0]?.content).toBe('# Playbook')
   })
 
   it('verifies snapshot storage can materialize a probe copy', () => {
-    const { manager, root } = createManagerWithSkill('playbook', '# Playbook')
+    const { manager, root } = createManagerWithSkill('playbook', '# Playbook', tempRoots)
 
     manager.verifyActivationInfrastructure()
 
@@ -35,7 +32,7 @@ describe('SharedSkillManager', () => {
   })
 
   it('materializes activation snapshots with copied skill files', async () => {
-    const { manager, executeSQL, root } = createManagerWithSkill('research', '# Research')
+    const { manager, root } = createManagerWithSkill('research', '# Research', tempRoots)
 
     const snapshot = await manager.createActivationSnapshot({
       runId: 'run-123',
@@ -56,14 +53,11 @@ describe('SharedSkillManager', () => {
     const copiedSkillPath = path.join(snapshot!.materializedPath, 'research', 'SKILL.md')
     expect(fs.existsSync(copiedSkillPath)).toBe(true)
     expect(fs.readFileSync(copiedSkillPath, 'utf-8')).toBe('# Research')
-
-    const sqlCalls = executeSQL.mock.calls.map(([sql]) => String(sql))
-    expect(sqlCalls.some(sql => sql.includes('INSERT INTO skill_activation_snapshots'))).toBe(true)
     expect(snapshot?.materializedPath.startsWith(path.join(root, 'skill-snapshots'))).toBe(true)
   })
 
   it('cleans up materialized snapshots', async () => {
-    const { manager } = createManagerWithSkill('research', '# Research')
+    const { manager } = createManagerWithSkill('research', '# Research', tempRoots)
 
     const snapshot = await manager.createActivationSnapshot({
       runId: 'run-123',
@@ -79,32 +73,19 @@ describe('SharedSkillManager', () => {
   })
 })
 
-function createManagerWithSkill(skillName: string, content: string): {
+function createManagerWithSkill(skillName: string, content: string, tempRoots: string[]): {
   manager: SharedSkillManager
-  executeSQL: ReturnType<typeof vi.fn>
   root: string
 } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wanman-shared-skills-'))
+  tempRoots.push(root)
   const sharedSkillsDir = path.join(root, 'shared-skills')
   const skillDir = path.join(sharedSkillsDir, skillName)
   fs.mkdirSync(skillDir, { recursive: true })
   fs.writeFileSync(path.join(skillDir, 'SKILL.md'), content)
 
-  const executeSQL = vi.fn(async (sql: string) => {
-    if (sql.includes('SELECT version, content, status FROM shared_skill_versions')) {
-      return []
-    }
-    return []
-  })
-
-  const brainManager = {
-    isInitialized: true,
-    executeSQL,
-  } as unknown as BrainManager
-
   return {
-    manager: new SharedSkillManager(brainManager, sharedSkillsDir),
-    executeSQL,
+    manager: new SharedSkillManager(sharedSkillsDir),
     root,
   }
 }

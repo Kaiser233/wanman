@@ -11,7 +11,6 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync } from 'child_process';
 import { createLogger } from './logger.js';
 
 const log = createLogger('credential-manager');
@@ -283,8 +282,6 @@ export class CredentialManager {
         JSON.stringify(this.credentials, null, 2),
         { mode: 0o600 },
       );
-      // Fix ownership so agent user can read credentials
-      this.chownForAgent(this.credentialsFilePath);
     } catch (err) {
       log.error('failed to write credentials file', {
         error: err instanceof Error ? err.message : String(err),
@@ -306,21 +303,10 @@ export class CredentialManager {
         JSON.stringify(this.credentials, null, 2),
         { mode: 0o600 },
       );
-      this.chownForAgent(this.vaultPath);
     } catch (err) {
       log.warn('failed to save to vault', {
         error: err instanceof Error ? err.message : String(err),
       });
-    }
-  }
-
-  /** Fix file ownership for agent user when running as root. */
-  private chownForAgent(filePath: string): void {
-    const agentUser = process.env['WANMAN_AGENT_USER'];
-    if (agentUser && process.getuid?.() === 0) {
-      try {
-        execSync(`chown ${agentUser}:${agentUser} ${filePath}`, { stdio: 'pipe' });
-      } catch { /* best effort */ }
     }
   }
 }

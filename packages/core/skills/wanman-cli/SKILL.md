@@ -65,14 +65,6 @@ wanman context get <key>
 
 Used to share blueprints, summaries, and other information needed across agents.
 
-## Hypothesis Tracking
-
-```bash
-wanman hypothesis create "<title>" [--rationale "<text>"]
-wanman hypothesis list [--status <proposed|active|validated|rejected>]
-wanman hypothesis update <id> --status <validated|rejected> [--outcome "<text>"] [--evidence <artifact-ids>]
-```
-
 ## Agent Management
 
 ```bash

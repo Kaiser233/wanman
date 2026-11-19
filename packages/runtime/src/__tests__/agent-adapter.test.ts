@@ -31,15 +31,20 @@ afterEach(() => {
   delete process.env['WANMAN_AGY_MODEL'];
   delete process.env['WANMAN_AGY_HIGH_MODEL'];
   delete process.env['WANMAN_AGY_STANDARD_MODEL'];
+  delete process.env['WANMAN_AGY_FAST_MODEL'];
+  delete process.env['WANMAN_FAST_MODEL'];
+  delete process.env['WANMAN_CLAUDE_FAST_MODEL'];
+  delete process.env['WANMAN_CODEX_FAST_MODEL'];
 });
 
 describe('agent-adapter', () => {
-  it('defaults to claude runtime', () => {
-    expect(resolveAgentRuntime(makeDefinition())).toBe('claude');
+  it('defaults to agy runtime', () => {
+    expect(resolveAgentRuntime(makeDefinition())).toBe('agy');
   });
 
   it('uses explicit agent runtime when env override is absent', () => {
     expect(resolveAgentRuntime(makeDefinition({ runtime: 'codex' }))).toBe('codex');
+    expect(resolveAgentRuntime(makeDefinition({ runtime: 'claude' }))).toBe('claude');
   });
 
   it('lets WANMAN_RUNTIME override agent config', () => {
@@ -47,8 +52,9 @@ describe('agent-adapter', () => {
     expect(resolveAgentRuntime(makeDefinition({ runtime: 'claude' }))).toBe('codex');
   });
 
-  it('normalizes unknown runtimes back to claude', () => {
-    expect(normalizeAgentRuntime('gemini')).toBe('claude');
+  it('normalizes unknown runtimes to agy', () => {
+    expect(normalizeAgentRuntime('gemini')).toBe('agy');
+    expect(normalizeAgentRuntime(undefined)).toBe('agy');
   });
 
   it('normalizes agy and its aliases to agy', () => {
@@ -73,18 +79,21 @@ describe('agent-adapter', () => {
   it('resolves abstract tiers to claude defaults', () => {
     expect(resolveModel('high', 'claude')).toBe('opus');
     expect(resolveModel('standard', 'claude')).toBe('sonnet');
+    expect(resolveModel('fast', 'claude')).toBe('haiku');
   });
 
   it('resolves abstract tiers to codex defaults', () => {
     expect(resolveModel('high', 'codex')).toBe('gpt-5.4');
     expect(resolveModel('standard', 'codex')).toBe('gpt-5.4');
+    expect(resolveModel('fast', 'codex')).toBe('gpt-5.4');
   });
 
   it('resolves abstract tiers and claude aliases to agy defaults', () => {
     expect(resolveModel('high', 'agy')).toBe('gemini-4-hydrogen-high');
     expect(resolveModel('standard', 'agy')).toBe('gemini-4-carbon-medium');
+    expect(resolveModel('fast', 'agy')).toBe('gemini-3.8-flash-low');
     expect(resolveModel('claude-opus-4-6', 'agy')).toBe('gemini-4-hydrogen-high');
-    expect(resolveModel('haiku', 'agy')).toBe('gemini-4-carbon-medium');
+    expect(resolveModel('haiku', 'agy')).toBe('gemini-3.8-flash-low');
     expect(resolveModel('default', 'agy')).toBe('default');
   });
 

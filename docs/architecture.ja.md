@@ -140,17 +140,16 @@ interface ContextEntry {
 
 RPC メソッド: `context.get`、`context.set`、`context.list`。`set` は upsert（`INSERT ... ON CONFLICT DO UPDATE`）です。
 
-## 5. Task pool、initiatives、artifacts、hypotheses
+## 5. Task pool、initiatives、artifacts、capsules
 
 スーパーバイザーは生メッセージを超えた構造化された状態も保有します:
 
 - **TaskPool** — エージェントが所有する task。状態（`pending`、`in_progress`、`done`、`blocked`）、優先度、`--after` 依存関係を持ちます。`wanman task list` は依存関係を考慮したビューを描画します。
 - **InitiativeBoard** — 長期にわたる複数タスクから成る initiative。
-- **ArtifactStore** — `wanman artifact put` で生成される構造化出力（調査サマリ、計画など）です。Artifact は kind、path、content、JSON メタデータを持ちます。
-- **HypothesisPool** — 状態遷移付きの、実験スタイルの hypothesis。
+- **ArtifactStore** — `wanman artifact put` でローカル SQLite に保存される構造化出力（調査サマリ、計画など）です。Artifact は kind、path、content、JSON メタデータを持ちます。
 - **ChangeCapsulePool** — エージェントがレビュー可能な、提案された変更バンドルです。
 
-これらはすべて単一の `wanman.db` 配下の SQLite テーブルにすぎず、JSON-RPC 経由でアクセスできます。
+これらはすべて単一のローカル `wanman.db` 配下の SQLite テーブルであり、JSON-RPC 経由でアクセスできます。
 
 ## 6. 外部イベントと cron
 
@@ -194,18 +193,16 @@ Skill スナップショット — 特定のランに紐付けられた不変コ
 - `wanman-cli` — エージェントが実行時に参照する CLI コマンドリファレンスです。
 - `workspace-conventions` — エージェントがワークスペース内で従うべきファイル配置です。
 
-## 10. Brain と永続化
+## 10. ローカル永続化とサーキットブレーカー
 
-永続化レイヤーは 2 つあり、どちらもエージェントコードからはオプション扱いです:
-
-- **ローカル SQLite（agents 設定の `dbPath`）** — 常に存在します。messages、context、tasks、artifacts、hypotheses、capsules。同一ワークスペース内でスーパーバイザーの再起動を越えて永続化されます。
-- **`@sandbank.dev/db9` brain アダプタ（オプション）** — runtime に db9 接続（トークン + DB 名）が設定されている場合、artifacts と context をクロスラン・クロスマシンのストアにミラーします。記憶を共有するスーパーバイザー群や、ラン後の分析に有用です。OSS ビルドでは db9 をオプショナルな peer dependency として扱います — 存在しなければミラーが無効化されるだけです。
+- **ローカル SQLite（agents 設定の `dbPath`）** — クラウド依存なしで常に有効です。messages、context、tasks、initiatives、capsules、artifacts（`ArtifactStore`）を同一ワークスペース内で永続化します。
+- **ハードサーキットブレーカー** — 全体・エージェント単位のトークン上限（`tokenBudget` / `agentTokenBudget`）、全体実行時間上限（`maxDurationMs`）、単発タイムアウト（`spawnTimeoutMs`）をリアルタイム監視し、超過時はエージェントを停止して `run.halted` と `/health.budget.halted` を記録します。
 
 ## 11. HTTP サーフェスの概観
 
 | Endpoint | Method | 用途 |
 |----------|--------|---------|
-| `/health` | GET | スーパーバイザーとエージェントごとの状態スナップショット。 |
+| `/health` | GET | スーパーバイザー、エージェント詳細、`budget`、`worktrees` スナップショット。 |
 | `/rpc` | POST | JSON-RPC 2.0 — CLI のメインサーフェス。 |
 | `/events` | POST | 外部イベントのイングレス。 |
 
@@ -213,9 +210,9 @@ Skill スナップショット — 特定のランに紐付けられた不変コ
 
 | Method | 用途 |
 |--------|---------|
-| `agent.send` / `agent.recv` / `agent.list` | エージェント間メッセージング。 |
+| `agent.send` / `agent.recv` / `agent.list` | エージェント間メッセージングと状態取得。 |
 | `context.get` / `context.set` / `context.list` | 共有 context。 |
-| `task.*` / `initiative.*` / `capsule.*` / `artifact.*` / `hypothesis.*` | 構造化状態。 |
+| `task.*` / `initiative.*` / `capsule.*` / `artifact.*` | ローカル SQLite の構造化状態。 |
 | `event.push` | `POST /events` と同等。RPC クライアント向け。 |
 | `health.check` | RPC 経由のヘルススナップショット。 |
 

@@ -22,6 +22,10 @@ export interface PreambleInput {
   steerReason?: string
   /** Run ID for reference */
   runId?: string
+  /** Dedicated isolated git worktree directory assigned to this agent */
+  worktreePath?: string
+  /** Dedicated git branch assigned to this agent */
+  branch?: string
 }
 
 /**
@@ -37,6 +41,13 @@ export function generatePreamble(input: PreambleInput): string {
   sections.push(`## System Context (Loop #${input.loopNumber})`)
   if (input.runId) {
     sections.push(`Run ID: \`${input.runId}\` | Uptime: ${formatUptime(input.uptimeSeconds)}`)
+  }
+  if (input.worktreePath && input.branch) {
+    sections.push('')
+    sections.push('### Isolated Git Worktree')
+    sections.push(`- Worktree: \`${input.worktreePath}\``)
+    sections.push(`- Branch: \`${input.branch}\``)
+    sections.push('- Make all repository edits, test runs, and commits inside this dedicated worktree and branch so parallel workers do not collide.')
   }
 
   // Steer interrupt notice (highest priority)

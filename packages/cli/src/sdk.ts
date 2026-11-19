@@ -14,6 +14,9 @@ export type {
   WanmanHostTakeoverOptions,
 } from '@wanman/host-sdk'
 export {
+  DEFAULT_MAX_DURATION_SEC,
+  DEFAULT_MAX_TOKENS,
+  DEFAULT_SPAWN_TIMEOUT_SEC,
   createDefaultRunOptions,
   createRunOptions,
   createTakeoverRunOptions,

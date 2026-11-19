@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import {
-  buildRunBrainName,
+  buildRunId,
   createRunSessionPlan,
   createRunLaunchPlan,
   detectRequiredRuntimes,
@@ -92,7 +92,6 @@ describe('run orchestrator helpers', () => {
         ],
       }),
       standalone: false,
-      db9Token: 'db9-token',
       env: {
         ANTHROPIC_BASE_URL: 'https://api.example.com',
         WANMAN_CODEX_MODEL: 'gpt-5.4',
@@ -107,12 +106,11 @@ describe('run orchestrator helpers', () => {
     expect(plan.runtimeLabel).toBe('codex')
     expect(plan.llmModeLabel).toBe('codex-cli')
     expect(plan.codexConfigLabel).toBe('gpt-5.4 / default')
-    expect(plan.brainName).toMatch(/^wanman-run-/)
-    expect(plan.runId).toBe(plan.brainName)
+    expect(plan.runId).toMatch(/^run-/)
   })
 
-  it('generates stable brain names from goals', () => {
-    expect(buildRunBrainName('Launch beta now')).toMatch(/^wanman-run-/)
+  it('generates stable run ids from goals', () => {
+    expect(buildRunId('Launch beta now')).toMatch(/^wanman-run-/)
   })
 
   it('normalizes agy runtime aliases and detects agy and mixed runtimes', () => {
@@ -120,7 +118,8 @@ describe('run orchestrator helpers', () => {
     expect(normalizeRuntime('atg')).toBe('agy')
     expect(normalizeRuntime('antigravity')).toBe('agy')
     expect(normalizeRuntime('codex')).toBe('codex')
-    expect(normalizeRuntime('other')).toBe('claude')
+    expect(normalizeRuntime('claude')).toBe('claude')
+    expect(normalizeRuntime('other')).toBe('agy')
 
     const agyPlan = createRunSessionPlan({
       goal: 'Run with agy',
@@ -176,6 +175,6 @@ describe('run orchestrator helpers', () => {
     expect(mixedPlan.llmModeLabel).toBe('multi-runtime')
     expect(mixedPlan.agyConfigLabel).toBe('default / default')
     expect(mixedPlan.codexConfigLabel).toBe('default / default')
-    expect(detectRequiredRuntimes('invalid-json')).toEqual(['claude'])
+    expect(detectRequiredRuntimes('invalid-json')).toEqual(['agy'])
   })
 })

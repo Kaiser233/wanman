@@ -134,29 +134,6 @@ describe('spawnCodexExec', () => {
     expect(args.at(-1)).toContain('Start working.');
   });
 
-  it('uses runuser when a root supervisor runs an agent as another user', () => {
-    const getuid = process.getuid ? vi.spyOn(process, 'getuid').mockReturnValue(0) : undefined;
-    const proc = createMockProc();
-    spawnMock.mockReturnValue(proc);
-
-    spawnCodexExec({
-      runtime: 'codex',
-      model: 'gpt-5.4',
-      systemPrompt: 'System prompt',
-      cwd: '/tmp/work',
-      runAsUser: 'agent',
-    });
-
-    expect(spawnMock).toHaveBeenCalledWith(
-      'runuser',
-      expect.arrayContaining(['-u', 'agent', '--', 'codex']),
-      expect.objectContaining({
-        env: expect.objectContaining({ HOME: '/home/agent' }),
-      }),
-    );
-    getuid?.mockRestore();
-  });
-
   it('passes fast mode through as service_tier and fast_mode config overrides', () => {
     const proc = createMockProc();
     spawnMock.mockReturnValue(proc);

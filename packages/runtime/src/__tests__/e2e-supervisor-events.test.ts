@@ -44,31 +44,6 @@ vi.mock('../agent-process.js', () => {
   return { AgentProcess: MockAgentProcess }
 })
 
-// Brain mock for artifact operations
-const artifactStore: Array<Record<string, unknown>> = []
-let artifactIdCounter = 1
-
-vi.mock('../brain-manager.js', () => {
-  class MockBrainManager {
-    isInitialized = true
-    env = { DATABASE_URL: 'mock://', DB9_DATABASE_ID: 'mock', DB9_DATABASE_NAME: 'mock', PGHOST: 'mock', PGPORT: '5432', PGUSER: 'mock', PGPASSWORD: 'mock', PGDATABASE: 'mock' }
-    brainSkill = { name: 'brain', content: 'stub' }
-    dbId = 'mock-db'
-    async initialize() {}
-    async executeSQL(sql: string) {
-      if (sql.includes('CREATE TABLE') || sql.includes('CREATE INDEX')) return []
-      if (sql.startsWith('INSERT INTO artifacts')) {
-        const id = artifactIdCounter++
-        const row = { id, agent: 'finance', kind: 'budget_item', created_at: new Date().toISOString() }
-        artifactStore.push(row)
-        return [row]
-      }
-      return []
-    }
-  }
-  return { BrainManager: MockBrainManager }
-})
-
 import { Supervisor } from '../supervisor.js'
 
 const config: AgentMatrixConfig = {
@@ -76,7 +51,7 @@ const config: AgentMatrixConfig = {
     { name: 'ceo', lifecycle: '24/7' as const, model: 'claude-sonnet-4-6', systemPrompt: '' },
     { name: 'dev', lifecycle: 'on-demand' as const, model: 'claude-sonnet-4-6', systemPrompt: '' },
   ],
-  brain: { token: 'mock', dbName: 'mock' },
+  dbPath: ':memory:',
 }
 
 function rpc(method: string, params: Record<string, unknown> = {}): JsonRpcRequest {

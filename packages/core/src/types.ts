@@ -22,7 +22,7 @@ export type AgentRuntime = 'claude' | 'codex' | 'agy';
 /** Codex reasoning effort / speed tier */
 export type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
-/** Model identifier or abstract tier — runtime-dependent (e.g. 'high', 'standard', 'o4-mini') */
+/** Model identifier or abstract tier — runtime-dependent (e.g. 'high', 'standard', 'fast', 'gemini-4-hydrogen-high') */
 export type ModelTier = string;
 
 /** Message priority — steer interrupts current work, normal waits */
@@ -80,16 +80,6 @@ export interface ContextEntry {
   updatedAt: number;
 }
 
-/** db9 Brain persistent memory config */
-export interface BrainConfig {
-  /** db9.ai API token (env: DB9_TOKEN) */
-  token: string;
-  /** Database name */
-  dbName: string;
-  /** db9 API base URL */
-  baseUrl?: string;
-}
-
 /** Top-level config loaded from agents.json */
 export interface AgentMatrixConfig {
   agents: AgentDefinition[];
@@ -101,8 +91,16 @@ export interface AgentMatrixConfig {
   workspaceRoot?: string;
   /** Git root for repo-aware runs (defaults from workspaceRoot) */
   gitRoot?: string;
-  /** db9 Brain persistent memory config (optional) */
-  brain?: BrainConfig;
+  /** Isolate each code-writing worker in its own git worktree & branch */
+  worktreeIsolation?: boolean;
+  /** Global token budget across all agents (0 = unlimited) */
+  tokenBudget?: number;
+  /** Per-agent cumulative token budget (0 = unlimited) */
+  agentTokenBudget?: number;
+  /** Global run wall-clock duration budget in ms (0 = unlimited) */
+  maxDurationMs?: number;
+  /** Per-spawn execution timeout in ms (0 = unlimited) */
+  spawnTimeoutMs?: number;
   /** Top-level goal for the CEO agent to pursue autonomously */
   goal?: string;
 }
@@ -167,13 +165,47 @@ export interface AuthProviderInfo {
   error?: string;
 }
 
+/** Per-agent runtime telemetry included in health responses */
+export interface HealthAgentInfo {
+  name: string;
+  state: AgentState;
+  lifecycle: AgentLifecycle;
+  runtime?: AgentRuntime;
+  model?: string;
+  currentTool?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  branch?: string;
+  worktreePath?: string;
+  haltedReason?: string;
+}
+
+/** Run-wide budget and circuit-breaker telemetry */
+export interface HealthBudgetInfo {
+  totalTokens: number;
+  tokenBudget: number | null;
+  agentTokenBudget: number | null;
+  elapsedMs: number;
+  maxDurationMs: number | null;
+  spawnTimeoutMs: number | null;
+  halted: boolean;
+  haltReason?: string;
+}
+
+/** Active per-agent git worktree assignment */
+export interface HealthWorktreeInfo {
+  agent: string;
+  name: string;
+  path: string;
+  branch: string;
+}
+
 /** Health check response */
 export interface HealthResponse {
   status: 'ok';
-  agents: Array<{
-    name: string;
-    state: AgentState;
-    lifecycle: AgentLifecycle;
-  }>;
+  agents: HealthAgentInfo[];
+  budget?: HealthBudgetInfo;
+  worktrees?: HealthWorktreeInfo[];
   timestamp: string;
 }

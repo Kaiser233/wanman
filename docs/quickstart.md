@@ -12,16 +12,13 @@ This walks through a complete first-run of wanman against any git repo on your m
   - Claude Code: install `@anthropic-ai/claude-code` globally and run its login flow (`claude` then follow prompts).
   - Codex: install `@openai/codex` globally and sign in per the Codex CLI docs.
   - Antigravity (`agy`): install `agy` (on `PATH` or `~/.local/bin/agy`, or set `WANMAN_AGY_BIN`) and authenticate via interactive host sign-in (macOS Keychain credentials stored by `agy`, e.g. service `gemini` / account `antigravity`), `AGY_ADC_AUTH=true`, or `GEMINI_API_KEY` with `"modelProvider": "gemini"` in `~/.gemini/antigravity-cli/settings.json`.
-- **Any existing git repository** you're willing to let agents read and scribble in. wanman will copy it into an isolated worktree and never mutate your dirty checkout.
-
-Optional:
-- A `@sandbank.dev/db9` brain adapter, if you want cross-run memory — see [architecture.md](architecture.md#brain--persistence).
+- **Any existing git repository** you're willing to let agents read and edit. wanman creates isolated git worktrees (`.wanman/worktrees/<worker>` on branch `agent/<worker>`) and never mutates your dirty checkout.
 
 ## 2. Clone, install, build
 
 ```bash
-git clone git@github.com:chekusu/wanman.git wanman.dev
-cd wanman.dev
+git clone https://github.com/Kaiser233/wanman.git wanman
+cd wanman
 pnpm install
 pnpm build
 ```
@@ -47,18 +44,20 @@ wanman takeover .
 
 What happens:
 1. wanman creates `.wanman/` inside the repo to hold its local state.
-2. It materializes `.wanman/worktree/` from the current `HEAD` so agents operate on a clean snapshot, not your dirty working tree.
+2. It materializes `.wanman/worktree/` from `HEAD` and creates per-worker isolated git worktrees under `.wanman/worktrees/<worker>` (branch `agent/<worker>`) for code-writing workers (`dev`, `dev-*`, `devops`) by default.
 3. It starts a supervisor on an auto-selected `127.0.0.1` port and waits for health.
-4. It spawns agents (Claude Code subprocesses by default) under an isolated `.wanman/home/` so shell profile changes stay out of your real `$HOME`.
-5. Takeover stays in the foreground, streaming agent activity.
+4. It spawns agents (Antigravity `agy` subprocesses by default) under an isolated `.wanman/home/` so shell profile changes stay out of your real `$HOME`.
+5. Takeover streams a live TUI dashboard with runtime/model, active tool, token progress bar, duration cap, and branch status. When a token or duration budget trips, all agents halt cleanly and a structured run report is printed.
 
-Choose a runtime with `--runtime` (and optional per-runtime model/effort flags):
+Choose a runtime, loop count, or budget circuit breaker with flags:
 
 ```bash
-wanman takeover . --runtime claude   # default
+wanman takeover .                                        # default: agy + isolated worktrees
+wanman takeover . --agy-model gemini-3.8-flash-low --agy-speed fast
+wanman takeover . --loops 10 --max-tokens 500000 --max-duration 1800
+wanman takeover . --runtime claude
 wanman takeover . --runtime codex
-wanman takeover . --runtime agy      # aliases: atg, antigravity
-wanman takeover . --runtime agy --agy-model gemini-3.8-flash-low --agy-effort high
+wanman takeover . --no-worktree-isolation                # share a single worktree
 ```
 
 ## 4. Talk to the matrix

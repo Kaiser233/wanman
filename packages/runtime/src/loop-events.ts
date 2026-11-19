@@ -1,8 +1,5 @@
 /**
  * Loop-level observability events.
- *
- * Design source: docs/research/2026-03-17-empty-loop-observability-review.md §5-6
- * db9 persistence: loop_events table (see brain-manager.ts initWanmanSchema)
  */
 
 // ---------------------------------------------------------------------------
@@ -96,6 +93,18 @@ export interface AgentBudgetExceeded {
   timestamp: string
 }
 
+export interface RunHalted {
+  type: 'run.halted'
+  runId: string
+  loop: number
+  reason: 'token_budget_exceeded' | 'duration_budget_exceeded'
+  totalTokens: number
+  tokenBudget: number | null
+  elapsedMs: number
+  maxDurationMs: number | null
+  timestamp: string
+}
+
 /** Union of all loop event types */
 export type LoopEvent =
   | LoopTick
@@ -106,6 +115,7 @@ export type LoopEvent =
   | QueueBacklog
   | ArtifactCreated
   | AgentBudgetExceeded
+  | RunHalted
 
 // ---------------------------------------------------------------------------
 // Loop snapshot (aggregated per loop for dashboard / NDJSON)

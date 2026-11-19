@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createDefaultRunOptions } from '@wanman/host-sdk'
 import type { ExecutionContext, PollExecutionContext, RunOptions } from './execution-session.js'
 import type { LocalSupervisorHandle } from './local-supervisor.js'
 import type { RuntimeClient } from './runtime-client.js'
@@ -110,10 +111,10 @@ function makeContext(runtime: RuntimeClient): ExecutionContext {
     waitForExit: vi.fn().mockResolvedValue(undefined),
   }
   const opts: RunOptions = {
+    ...createDefaultRunOptions(),
     loops: 10,
     pollInterval: 1,
     workerKey: 'lmstudio',
-    noBrain: true,
     keep: false,
     output: '/tmp',
     infinite: false,
